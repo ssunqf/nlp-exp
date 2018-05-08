@@ -8,6 +8,7 @@ import torch
 class TagVocab(Vocab):
     def __init__(self, counter, **kwargs):
         super(TagVocab, self).__init__(counter, **kwargs)
+        print(self.stoi)
         self.begin_mask = torch.ByteTensor([1 if s.startswith('B_') else 0 for i, s in enumerate(self.itos)])
         self.end_mask = torch.ByteTensor([1 if s.startswith('E_') else 0 for i, s in enumerate(self.itos)])
         self.middle_mask = torch.ByteTensor([1 if s.startswith('M_') else 0 for i, s in enumerate(self.itos)])
@@ -15,9 +16,13 @@ class TagVocab(Vocab):
         self.outer_mask = torch.ByteTensor([1 if s.endswith('_O') else 0 for i, s in enumerate(self.itos)])
 
         self.begin_constraints = (self.begin_mask | self.single_mask) == 0
+        print('begin constraints')
+        print(self.begin_constraints)
         # self.begin_constraints.masked_fill_((self.begin_mask | self.single_mask) == 0, 1)
 
         self.end_constraints = (self.end_mask | self.single_mask) == 0
+        print('end constraints')
+        print(self.end_constraints)
         # self.end_constraints.masked_fill_((self.end_mask | self.single_mask) == 0, 1)
 
         self.transition_constraints = torch.zeros(len(self), len(self), dtype=torch.uint8)
@@ -29,6 +34,10 @@ class TagVocab(Vocab):
                 elif si.startswith('B_') or si.startswith('M_'):
                     if si[2:] != sj[2:] or sj.startswith('S_') or sj.startswith('B_'):
                         self.transition_constraints[j, i] = 1
+
+        print('trainstion constraints')
+        print(self.transition_constraints)
+
 
     def check_valid(self, mask):
         seq_len, num_label = mask.size()

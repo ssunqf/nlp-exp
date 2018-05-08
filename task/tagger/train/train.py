@@ -19,17 +19,17 @@ from module import utils
 
 class Trainer:
     def __init__(self, model: Tagger, device: torch.device,
-                 partial_train_it,
-                 partial_valid_it,
-                 partial_test_it,
+                 train_it,
+                 valid_it,
+                 test_it,
                  valid_step, checkpoint_dir):
 
         self.model = model
         self.device = device
         self.optimizer = optim.Adam(self.model.parameters())
 
-        self.partial_train_it, self.partial_valid_it, self.partial_test_it = \
-            partial_train_it, partial_valid_it, partial_test_it
+        self.train_it, self.valid_it, self.test_it = \
+            train_it, valid_it, test_it
         self.valid_step = valid_step
         self.checkpoint_dir = checkpoint_dir
 
@@ -41,7 +41,7 @@ class Trainer:
         if optimizer:
             states['optimizer'] = self.optimizer.state_dict()
         if train:
-            states['partial_train_it'] = self.partial_train_it.state_dict()
+            states['train_it'] = self.train_it.state_dict()
         return states
 
     def load_state_dict(self, states, strict):
@@ -51,8 +51,8 @@ class Trainer:
         if 'optimizer' in states:
             self.optimizer.load_state_dict(states['optimizer'])
 
-        if 'partial_train_it' in states:
-            self.partial_train_it.load_state_dict(states['partial_train_it'])
+        if 'train_it' in states:
+            self.train_it.load_state_dict(states['train_it'])
 
     def load_checkpoint(self, path, strict=True):
         states = torch.load(path)
@@ -92,24 +92,28 @@ class Trainer:
     def train(self):
         partial_total_loss, partial_total_sen, start = 0, 1e-10, time.time()
         checkpoint_losses = collections.deque()
-        for step, batch in tqdm(enumerate(self.partial_train_it, start=1), total=len(self.partial_train_it)):
+        for step, batch in tqdm(enumerate(self.train_it, start=1), total=len(self.train_it)):
 
             loss, num_sen = self.train_one(batch, scale=1.0)
             partial_total_loss += loss
             partial_total_sen += num_sen
 
             if step % self.valid_step == 0:
-                partial_valid_loss = self.valid(self.partial_valid_it)
+                train_speed = partial_total_sen/(time.time()-start)
+
+                inference_start = time.time()
+                partial_valid_loss = self.valid(self.valid_it)
                 self.checkpoint(checkpoint_losses, partial_valid_loss)
 
                 print("partail: train loss=%.6f\t\tvalid loss=%.6f" % (partial_total_loss/partial_total_sen, partial_valid_loss))
-                print("speed:   %.2f sentence/s\n\n" % (partial_total_sen/(time.time()-start)))
+                print("speed:   train %.2f sentence/s  valid %.2f sentence/s\n\n" %
+                      (train_speed, len(self.valid_it)/(time.time()-inference_start)))
 
                 partial_total_loss, partial_total_sen, start = 0, 1e-10, time.time()
 
-            if self.partial_train_it.iterations % len(self.partial_train_it) == 0:
+            if self.train_it.iterations % len(self.train_it) == 0:
                 with torch.no_grad():
-                    print(self.model.evaluation(self.partial_test_it))
+                    print(self.model.evaluation(self.test_it))
 
     def checkpoint(self, checkpoint_losses, valid_loss):
         if len(checkpoint_losses) == 0 or checkpoint_losses[-1] > valid_loss:
@@ -127,7 +131,7 @@ class Trainer:
                 os.remove('%s/ctb-pos-%0.4f' % (self.checkpoint_dir, removed))
 
     @classmethod
-    def create(cls, config):
+    def create(cls, config, stage):
 
         text_field = data.Field(include_lengths=True)
         tag_field = PartialField()
@@ -158,7 +162,8 @@ class Trainer:
 
 
 class Config:
-    partial_prefix = './partial_ne/entity'
+    partial_prefix = './tagger-data/baike.seg'
+    fine_prefix = './partial_ne/ctb'
 
     train = '.train'
     valid = '.valid'
@@ -187,7 +192,7 @@ class Config:
 
     use_cuda = torch.cuda.is_available()
 
-    checkpoint_path = './partial_ne/summary.seg.model'
+    checkpoint_path = './tagger-data/seg.model'
 
     valid_step = 500
 
@@ -197,12 +202,13 @@ import argparse
 arg_parser = argparse.ArgumentParser()
 
 arg_parser.add_argument('--checkpoint', type=str, default=None, help='checkpoint path')
+arg_parser.add_argument('--stage', type=str, default='partial', help='partial or fine')
 
 args = arg_parser.parse_args()
 
 config = Config()
 
-trainer = Trainer.create(config)
+trainer = Trainer.create(config, args.stage)
 
 if args.checkpoint is not None:
     trainer.load_checkpoint(args.checkpoint)

@@ -4,3 +4,4 @@
 from .encoder import Encoder, ResidualEncoder
 from .crf import CRF, PartialCRF
 from .position import TimeSignal
+from .attention import MultiHead, SelfAttention

@@ -233,7 +233,7 @@ class PartialCRF(nn.Module):
         assert num_labels == self.num_labels
 
         # [batch, num_labels]
-        forward_scores = emissions[0] + self.begin_transition.masked_fill(self.begin_constraints, -1e20)\
+        forward_scores = emissions[0] + self.begin_transition.masked_fill(self.begin_constraints, -1e20) \
             .unsqueeze(0).expand(batch_size, num_labels)
         forward_scores = forward_scores.masked_fill(tags[0], -1e20)
 
@@ -247,7 +247,7 @@ class PartialCRF(nn.Module):
                 last_scores.append((finished[0], forward_scores[finished[0]].clone()))
 
             forward_scores = log_sum_exp(forward_scores.unsqueeze(1).expand(batch_size, num_labels, num_labels) \
-                                          + self.transitions.masked_fill(self.transition_constraints, -1e20).unsqueeze(0), axis=-1) \
+                             + self.transitions.masked_fill(self.transition_constraints, -1e20).unsqueeze(0), axis=-1) \
                              + emissions[i]
 
             forward_scores = forward_scores.masked_fill(tags[i], -1e20)
@@ -274,14 +274,12 @@ class PartialCRF(nn.Module):
 
         # [num_labels]
         scores = self.begin_transition + emissions[0]
-        print(scores)
         for i in range(1, emissions.size(0)):
             # [num_labels, num_labels]
             scores_with_transitions = scores.unsqueeze(0).expand_as(self.transitions) + self.transitions
             max_scores, max_index = scores_with_transitions.max(-1)
             back_pointers.append(max_index.data.tolist())
             scores = emissions[i] + max_scores
-
         scores = scores + self.end_transition
         max_score, max_index = scores.max(-1)
 

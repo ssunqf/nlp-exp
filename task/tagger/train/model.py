@@ -9,7 +9,7 @@ from torchtext import data
 from torchtext.vocab import Vocab
 from task.tagger.train.vocab import TagVocab
 
-from module import Encoder, PartialCRF, TimeSignal
+from module import Encoder, PartialCRF, TimeSignal, MultiHead
 
 import re
 
@@ -27,11 +27,15 @@ class Tagger(nn.Module):
         self.embed = nn.Embedding(len(text_vocab), embed_dim)
         self.time_signal = TimeSignal(embed_dim)
         self.encoder = Encoder(embed_dim, hidden_mode, hidden_dim, num_layers, bidirectional, folding=False, dropout=dropout)
-        # self.self_attention = SelfAttention(hidden_dim * 2, num_heads=num_heads)
-        self.crf = PartialCRF(hidden_dim * 2 if bidirectional else hidden_dim,
-                                   len(tag_vocab), tag_vocab.begin_constraints,
-                                   tag_vocab.end_constraints, tag_vocab.transition_constraints,
-                                   dropout)
+
+        self.encoder_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
+        self.attention = MultiHead(self.encoder_output_dim,
+                                   self.encoder_output_dim,
+                                   num_heads=num_heads)
+        self.crf = PartialCRF(self.encoder_output_dim,
+                              len(tag_vocab), tag_vocab.begin_constraints,
+                              tag_vocab.end_constraints, tag_vocab.transition_constraints,
+                              dropout)
 
     def criterion(self, batch: data.Batch):
         _, text_lens = batch.text
@@ -48,7 +52,12 @@ class Tagger(nn.Module):
 
         hidden, hidden_state = self.encoder(embed)
 
-        # hidden, _ = self.self_attention(hidden, text_lens)
+        max_len, batch_size = text.size()
+        mask = torch.ones(max_len, batch_size, dtype=torch.int8)
+        for id, len in enumerate(text_lens):
+            if len < max_len:
+                mask[len:, id] = 0
+        hidden, _ = self.attention(hidden, hidden, hidden, mask)
 
         if predict:
             preds = self.crf(hidden, text_lens)
