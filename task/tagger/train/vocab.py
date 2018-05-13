@@ -1,5 +1,6 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
+
 from torchtext.vocab import Vocab
 from typing import List, Tuple
 import torch

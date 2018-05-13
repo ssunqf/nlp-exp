@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
 
+import os
 from typing import List
 from torchtext import data
 

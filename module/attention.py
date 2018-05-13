@@ -226,7 +226,7 @@ class SelfAttention(nn.Module):
         assert hidden_dim % num_heads == 0
         self.head_dim = hidden_dim//num_heads
 
-        self.qkv_transformor = nn.Linear(hidden_dim, 3*hidden_dim)
+        self.qkv_transformor = nn.Linear(hidden_dim, 2*hidden_dim)
 
         self.multi_head = MultiHead(self.hidden_dim, self.num_heads)
 
@@ -249,7 +249,7 @@ class SelfAttention(nn.Module):
         # [seq_len, batch_size, hidden_dim] -> ([batch_size, seq_len,hidden_dim], [batch_size, seq_len, hidden_dim], [batch_size, seq_len, hidden_dim])
 
         seq_len, batch_size, _ = data.size()
-        query, key, value = self.qkv_transformor(data).transpose(0, 1).chunk(3, -1)
+        query, key = self.qkv_transformor(data).transpose(0, 1).chunk(2, -1)
         src_mask = self._mask(batch_size, seq_len, lens)
-        context, scores = self.multi_head(query, key, value, src_mask)
+        context, scores = self.multi_head(query, key, data, src_mask)
         return context.transpose(0, 1), scores.transpose(0, 1)

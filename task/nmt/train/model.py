@@ -150,13 +150,13 @@ class Seq2Seq(nn.Module):
 
         return Tensor(mask)
 
-    def forward(self, src: Tensor, src_lengths: List[int],
+    def forward(self, src: Tensor, src_lengths: Tensor,
                 trg: Tensor,
                 src_embedding, trg_embedding, output_embedding,
                 teacher_force_ratio: float = 0.5) -> Tuple[Tensor, Tensor]:
         """
         :param src: LongTensor[src_len, batch]
-        :param src_lengths: [int] * batch
+        :param src_lengths: IntTensor[batch]
         :param trg: LongTensor[trg_len, batch]
         :param teacher_force_ratio: float
         :return:
@@ -169,7 +169,7 @@ class Seq2Seq(nn.Module):
         src_embed = src_embedding(src)
 
         # src_hidden [src_len, batch, dim]
-        src_hidden, src_hidden_state = self.encoder(src_embed)
+        src_hidden, src_hidden_state = self.encoder(src_embed, src_lengths)
 
         hidden_state = src_hidden_state
 

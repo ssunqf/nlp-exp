@@ -263,6 +263,7 @@ class PartialCRF(nn.Module):
         forward_scores = last_scores + \
                          self.end_transition.masked_fill(self.end_constraints, -1e20)\
                              .unsqueeze(0).expand(batch_size, num_labels)
+
         return log_sum_exp(forward_scores, axis=-1)
 
     def _viterbi_decode(self, emissions):

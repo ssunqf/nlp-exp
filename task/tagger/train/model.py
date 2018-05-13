@@ -18,7 +18,7 @@ eng_num = re.compile('[a-zA-Z0-9]+')
 
 class Tagger(nn.Module):
     def __init__(self, text_vocab: Vocab, tag_vocab: TagVocab,
-                 embed_dim, pos_dim, hidden_mode, hidden_dim, num_layers, bidirectional, num_heads=1, dropout=0.2):
+                 embed_dim, hidden_mode, hidden_dim, hidden_layers, atten_heads=1, num_blocks=1, dropout=0.2):
         super(Tagger, self).__init__()
 
         self.text_vocab = text_vocab
@@ -26,13 +26,13 @@ class Tagger(nn.Module):
 
         self.embed = nn.Embedding(len(text_vocab), embed_dim)
         self.time_signal = TimeSignal(embed_dim)
-        self.encoder = Encoder(embed_dim, hidden_mode, hidden_dim, num_layers, bidirectional, folding=False, dropout=dropout)
+        self.encoder = Encoder(embed_dim,
+                               hidden_mode, hidden_dim, hidden_layers,
+                               atten_heads=atten_heads,
+                               num_blocks=num_blocks,
+                               dropout=dropout)
 
-        self.encoder_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
-        self.attention = MultiHead(self.encoder_output_dim,
-                                   self.encoder_output_dim,
-                                   num_heads=num_heads)
-        self.crf = PartialCRF(self.encoder_output_dim,
+        self.crf = PartialCRF(hidden_dim,
                               len(tag_vocab), tag_vocab.begin_constraints,
                               tag_vocab.end_constraints, tag_vocab.transition_constraints,
                               dropout)
@@ -40,40 +40,19 @@ class Tagger(nn.Module):
     def criterion(self, batch: data.Batch):
         _, text_lens = batch.text
         masks, tags = batch.tags
-        feats = self.feature(batch, predict=False)
+        feats = self.feature(batch)
 
         return self.crf.criterion(feats, masks, text_lens)
 
-    def feature(self, batch: data.Batch, predict: bool=False):
+    def feature(self, batch: data.Batch):
 
         text, text_lens = batch.text
         golds = batch.tags
         embed = self.embed(text) + self.time_signal(text)
 
-        hidden, hidden_state = self.encoder(embed)
+        hidden = self.encoder(embed, text_lens)
 
-        max_len, batch_size = text.size()
-        mask = torch.ones(max_len, batch_size, dtype=torch.int8)
-        for id, len in enumerate(text_lens):
-            if len < max_len:
-                mask[len:, id] = 0
-        hidden, _ = self.attention(hidden, hidden, hidden, mask)
-
-        if predict:
-            preds = self.crf(hidden, text_lens)
-
-            # print(gold_tags)
-            confidences = []
-            for i in range(len(text_lens)):
-                score, pred = preds[i]
-                gold = golds[0:text_lens[i], i]
-                c, t = self.evaluation_one(pred, gold)
-
-                confidences.append(c/(t+1e-5))
-
-            return hidden, confidences
-        else:
-            return hidden
+        return hidden
 
     def predict(self, batch: data.Batch):
 
@@ -166,4 +145,9 @@ class Tagger(nn.Module):
         recall = correct/float(true+1e-5)
         return {'recall':recall}
 
+    def coarse_params(self):
+        return self.parameters()
 
+    def fine_params(self):
+        yield from self.embed.parameters()
+        yield from self.crf.parameters()

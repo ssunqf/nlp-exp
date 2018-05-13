@@ -1,10 +1,9 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
-
+import six
 from torchtext import data
 from torchtext.data import Dataset
 import torch
-from torch.autograd import Variable
 from typing import List
 from task.tagger.train.vocab import TagVocab
 
@@ -33,7 +32,7 @@ class PartialField(data.Field):
             tok for tok in [self.unk_token, self.pad_token, self.init_token,
                             self.eos_token]
             if tok is not None))
-        print(counter)
+
         self.vocab = self.vocab_cls(counter, specials=specials, **kwargs)
 
     def pad(self, minibatch):
@@ -119,6 +118,6 @@ class PartialField(data.Field):
             if self.include_lengths:
                 lengths = lengths.cuda(device)
         if self.include_lengths:
-            return Variable(masks, volatile=not train), lengths, arr
-        return Variable(masks, volatile=not train), arr
+            return masks, lengths, arr
+        return masks, arr
 

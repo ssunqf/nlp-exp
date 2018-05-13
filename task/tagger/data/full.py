@@ -27,11 +27,11 @@ with open(args.input) as input, open(args.output, 'w') as output:
                 word2type = [w.rsplit('_', 1) for w in words]
                 chars2type = [(list(utils.replace_entity(word)), tag) for word, tag in word2type]
                 text = [(type, char) for chars, _ in chars2type for type, char in chars]
-                text = [char if type == '@zh_char@' else type for type, char in text]
+                text = [char for type, char in text]
                 tags = [tag for chars, type in chars2type for tag in utils.BMESTagger.tag(len(chars), type)]
 
             else:
-                words = [[char if type == '@zh_char@' else type for type, char in utils.replace_entity(word)]
+                words = [[char for type, char in utils.replace_entity(word)]
                          for word in words
                          ]
                 label = [utils.BMESTagger.tag(len(chars)) for chars in words]
