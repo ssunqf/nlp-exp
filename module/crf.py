@@ -7,7 +7,6 @@ from typing import List
 import torch
 import torch.nn as nn
 
-from overrides import overrides
 
 # reference
 
@@ -146,7 +145,6 @@ class CRF(nn.Module):
 
         return (forward_score - gold_score).sum(), len(lens)
 
-    @overrides
     def forward(self, feats, lens: List[int]):
         '''
         unsupported batch process
@@ -171,25 +169,21 @@ class PartialCRF(nn.Module):
         super(PartialCRF, self).__init__()
         self.hidden_dim = feature_dim
         self.num_labels = num_labels
-        self.transition_constraints = transition_constraints
         self.feature2labels = nn.Sequential(nn.Dropout(dropout),
                                             nn.Linear(feature_dim, num_labels))
         self.begin_transition = nn.Parameter(torch.full([self.num_labels], 1./self.num_labels))
-        self.begin_constraints = begin_constraints
+        self.begin_constraints = nn.Parameter(begin_constraints, requires_grad=False)
         # tags[i + 1] -> tags[i]
         self.transitions = nn.Parameter(torch.full([self.num_labels, self.num_labels], 1./self.num_labels))
-        self.transition_constraints = transition_constraints
+        self.transition_constraints = nn.Parameter(transition_constraints, requires_grad=False)
 
         self.end_transition = nn.Parameter(torch.full([self.num_labels], 1./self.num_labels))
-        self.end_constraints = end_constraints
+        self.end_constraints = nn.Parameter(end_constraints, requires_grad=False)
 
-    @overrides
-    def to(self, device: torch.device, dtype: torch.dtype):
-        self.begin_constraints = self.begin_constraints.to(device)
-        self.end_constraints = self.end_constraints.to(device)
-        self.transition_constraints = self.transition_constraints.to(device)
-
-        return super(PartialCRF, self).to(device, dtype)
+    def parameters(self):
+        yield self.begin_transition
+        yield self.transitions
+        yield self.end_transition
 
     def forward_alg(self, emissions, lens):
         '''
@@ -305,7 +299,6 @@ class PartialCRF(nn.Module):
         # print(partial_score, forward_score)
         return (forward_score - partial_score).sum(), len(lens)
 
-    @overrides
     def forward(self, feats, lens: List[int]):
         '''
         unsupported batch process

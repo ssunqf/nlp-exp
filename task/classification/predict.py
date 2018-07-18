@@ -18,7 +18,7 @@ from .config import config
 async def predict(vectorizer, model, label2id: dict):
     db = await dbConnect()
     async with db.transaction():
-        async for record in db.cursor('select url, knowledge, label from common_words3'):
+        async for record in db.cursor('select url, knowledge, label from label_entity'):
             url = record['url']
             knowledge = json.loads(record['knowledge'])
             label = json.loads(record['label'])
@@ -32,8 +32,8 @@ async def predict(vectorizer, model, label2id: dict):
                 infobox = vectorizer.feature(entity.infobox())
                 type = vectorizer.feature(entity.type())
 
-                feature = torch.from_numpy(np.concatenate((summary, tags, keywords, infobox, type))).unsqueeze(0)
-                predict = model(feature).squeeze(0)
+                feature = torch.from_numpy(np.concatenate((summary, tags, keywords, infobox, type))).unsqueeze(0).cuda()
+                predict = model(feature).squeeze(0).cpu()
 
                 wrongs = ['%s: %0.3f' % (label, predict[id])
                           for label, id in label2id.items()
@@ -46,7 +46,7 @@ async def predict(vectorizer, model, label2id: dict):
 
 
 if __name__ == '__main__':
-    vectorizer = BOWVectorizer(config.word_embed_path)
+    vectorizer = BOWVectorizer(config.word_embed_path, config.mode)
     print('load word embedding.')
     with open(config.label_dict) as f:
         labels = [l.strip() for l in f.readlines() if len(l.strip()) > 0 and not l.startswith('#')]

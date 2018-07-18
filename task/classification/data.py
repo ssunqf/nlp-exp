@@ -29,8 +29,8 @@ class Entity:
         return None
 
     def summary(self) -> List[str]:
-        s = html2text(dictWalk(self.knowledge, ['attrs', 'lemma_summary']))
-        return list(splitter(s)) if s else []
+        paras = html2text(dictWalk(self.knowledge, ['attrs', 'lemma_summary']))
+        return [t for p in paras for t in splitter(p) if len(t) > 0] if paras and len(paras) > 0 else []
 
     def infobox(self) -> Dict[str, List[str]]:
         box = html2text(dictWalk(self.knowledge, ['attrs', 'infobox']))
@@ -42,8 +42,9 @@ class Entity:
 
     def keywords(self) -> List[str]:
         t = dictWalk(self.knowledge, ['attrs', 'lemma_title'])
+        text = dictWalk(self.knowledge, ['keywords'])
         raws = [word.replace('###', ' ').replace(t, '') if t else word.replace('###', ' ')
-                for word in re.sub('(?<=[A-Za-z.])[ ]+(?=[A-Za-z.])', '###', dictWalk(self.knowledge, ['keywords'])).split()]
+                for word in re.sub('(?<=[A-Za-z.])[ ]+(?=[A-Za-z.])', '###', text if text else '').split()]
         return [i for i in raws if len(i) > 0]
 
     def labels(self) -> List[str]:
@@ -59,7 +60,7 @@ class Entity:
 async def extract(vectorizer):
     db = await dbConnect()
     async with db.transaction():
-        async for record in db.cursor('select url, knowledge, label from common_words3'):
+        async for record in db.cursor('select url, knowledge, label from label_entity order by keyword'):
             url = record['url']
             knowledge = json.loads(record['knowledge'])
             label = json.loads(record['label'])

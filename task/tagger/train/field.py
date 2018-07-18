@@ -11,7 +11,7 @@ from task.tagger.train.vocab import TagVocab
 class PartialField(data.Field):
     def __init__(self, **kwargs):
         self.with_type = False
-        super(PartialField, self).__init__(pad_token='S_', unk_token=None, **kwargs)
+        super(PartialField, self).__init__(pad_token='S_O', unk_token=None, **kwargs)
         self.vocab_cls = TagVocab
 
     def build_vocab(self, *args, **kwargs):

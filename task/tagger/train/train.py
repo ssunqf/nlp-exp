@@ -120,7 +120,8 @@ class Trainer:
 
             if self.train_it.iterations % len(self.train_it) == 0:
                 with torch.no_grad():
-                    print(self.model.evaluation(self.test_it))
+                    pass
+                    # print(self.model.evaluation(self.test_it))
 
     def checkpoint(self, checkpoint_losses, valid_loss):
         if len(checkpoint_losses) == 0 or checkpoint_losses[-1] > valid_loss:
@@ -145,7 +146,7 @@ class Trainer:
         print('loading dataset.')
         if stage == COARSE_STAGE:
             partial_train, partial_valid, partial_test = TaggerDataset.splits([text_field, tag_field],
-                                                                              prefix=config.full_prefix,
+                                                                              prefix=config.partial_prefix,
                                                                               train=config.train,
                                                                               valid=config.valid,
                                                                               test=config.test)
@@ -222,7 +223,7 @@ class Config:
     hidden_mode = 'CNN'
     hidden_dim = 2000
     hidden_layers = 3
-    dropout = 0.5
+    dropout = 0.3
     atten_heads = 10
     num_blocks=2
     assert hidden_dim % atten_heads == 0

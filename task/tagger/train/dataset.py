@@ -25,7 +25,7 @@ class TaggerDataset(data.Dataset):
                 if 0 < len(items) < 150:
                     items = [t.rsplit('#', maxsplit=1) for t in items]
                     tokens = [t[0] for t in items]
-                    tags = [t[1][0:2] for t in items]
+                    tags = [t[1] for t in items]
                     examples.append(data.Example.fromlist([tokens, tags], fields))
 
         super(TaggerDataset, self).__init__(examples, fields, **kwargs)
