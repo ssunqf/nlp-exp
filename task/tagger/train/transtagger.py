@@ -1,5 +1,7 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
+#!/usr/bin/env python3.6
+# -*- coding: utf-8 -*-
 
 import time
 import random
@@ -11,7 +13,7 @@ import torch
 from torch import optim
 from torchtext import data
 from torchtext.data.iterator import BucketIterator
-from task.tagger.train.model import Tagger
+from module.transformer import Tagger
 from tqdm import tqdm
 from task.tagger.train.dataset import TaggerDataset
 from task.tagger.train.field import PartialField

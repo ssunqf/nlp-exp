@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from .config import config
 from tensorboardX import SummaryWriter
 import gzip
+from tqdm import tqdm
 
 class Classifier(nn.Module):
     def __init__(self, feature_dim: int, num_label: int, dropout=0.3):
@@ -82,7 +83,7 @@ def train(model: Classifier, train_data, valid_data, test_data, label2id: dict, 
     best_mean_f1 = 0
     for epoch in range(max_epoch):
         train_loss, train_count = 0., 0.
-        for id, batch in enumerate(train_data):
+        for id, batch in tqdm(enumerate(train_data)):
             feature, label = batch
             model.train()
             model.zero_grad()
@@ -94,7 +95,7 @@ def train(model: Classifier, train_data, valid_data, test_data, label2id: dict, 
             loss.backward()
             optimizer.step()
 
-            writer.add_scalars('loss', {'train': train_loss/(train_count+1e-5)}, epoch*len(train_data)+id)
+            writer.add_scalars('Loss', {'train': train_loss/(train_count+1e-5)}, epoch*len(train_data)+id)
 
             if id % 1000 == 0:
                 valid_loss, valid_count = 0., 0.
@@ -130,9 +131,9 @@ def train(model: Classifier, train_data, valid_data, test_data, label2id: dict, 
                     label, TP_FN[id], precision[id], recall[id], fscore[id]) for label, id in label2id.items()))
 
                 for label, id in label2id.items():
-                    writer.add_scalars(label,
-                                       {'Prec': precision[id], 'Recall': recall[id], 'F1': fscore[id]},
-                                       epoch*len(train_data)+id)
+                    writer.add_scalars('Prec', label, precision[id], epoch*len(train_data)+id)
+                    writer.add_scalars('Recall', label, recall[id], epoch*len(train_data)+id)
+                    writer.add_scalars('F1', label, fscore[id], epoch*len(train_data)+id)
 
                 mean_f = fscore.mean()
                 if mean_f > best_mean_f1:

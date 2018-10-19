@@ -22,13 +22,14 @@ class ConvLayer(nn.Module):
         self.output_dim = output_dim
         self.layers = nn.Sequential(
             nn.Dropout(dropout),
-            nn.InstanceNorm1d(input_dim),
             nn.Conv1d(input_dim, output_dim,
-                      kernel_size=kernel_size, padding=_pad_size(kernel_size, dilation), dilation=dilation)
+                      kernel_size=kernel_size, padding=_pad_size(kernel_size, dilation), dilation=dilation),
+            nn.BatchNorm1d(input_dim),
+            nn.ReLU(),
         )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        output = F.relu(self.layers(input))
+        output = self.layers(input)
         return input + output if self.input_dim == self.output_dim else output
 
 
@@ -165,7 +166,7 @@ class Encoder(nn.Module):
 
     def forward(self, input: torch.Tensor, lengths: torch.Tensor):
         max_len, batch_size, *_ = input.size()
-        mask = torch.ones(max_len, batch_size, dtype=torch.int8)
+        mask = input.new_ones(max_len, batch_size, dtype=torch.int8)
         for id, len in enumerate(lengths):
             if len < max_len:
                 mask[len:, id] = 0

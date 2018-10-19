@@ -69,7 +69,6 @@ class CRF(nn.Module):
 
     def score_sentence(self, emissions, tags, lens: List[int]):
         '''
-
         :param emissions: Variable(FloatTensor([seq_len, batch, num_lables]))
         :param tags: Variable(FloatTensor([seq_len, batch]))
         :param lens: sentence lengths
@@ -171,7 +170,6 @@ class PartialCRF(nn.Module):
         super(PartialCRF, self).__init__()
         self.hidden_dim = feature_dim
         self.num_labels = num_labels
-        self.transition_constraints = transition_constraints
         self.feature2labels = nn.Sequential(nn.Dropout(dropout),
                                             nn.Linear(feature_dim, num_labels))
         self.begin_transition = nn.Parameter(torch.full([self.num_labels], 1./self.num_labels))
@@ -183,13 +181,10 @@ class PartialCRF(nn.Module):
         self.end_transition = nn.Parameter(torch.full([self.num_labels], 1./self.num_labels))
         self.end_constraints = end_constraints
 
-    @overrides
-    def to(self, device: torch.device, dtype: torch.dtype):
-        self.begin_constraints = self.begin_constraints.to(device)
-        self.end_constraints = self.end_constraints.to(device)
-        self.transition_constraints = self.transition_constraints.to(device)
-
-        return super(PartialCRF, self).to(device, dtype)
+    def parameters(self):
+        yield self.begin_transition
+        yield self.transitions
+        yield self.end_transition
 
     def forward_alg(self, emissions, lens):
         '''

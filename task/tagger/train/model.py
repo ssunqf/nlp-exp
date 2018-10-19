@@ -24,7 +24,7 @@ class Tagger(nn.Module):
         self.text_vocab = text_vocab
         self.tag_vocab = tag_vocab
 
-        self.embed = nn.Embedding(len(text_vocab), embed_dim)
+        self.embed = nn.Embedding(len(text_vocab), embed_dim, padding_idx=text_vocab.stoi['<pad>'])
         self.time_signal = TimeSignal(embed_dim)
         self.encoder = Encoder(embed_dim,
                                hidden_mode, hidden_dim, hidden_layers,
@@ -146,8 +146,12 @@ class Tagger(nn.Module):
         return {'recall':recall}
 
     def coarse_params(self):
-        return self.parameters()
+        yield from self.embed.parameters()
+        yield from self.time_signal.parameters()
+        yield from self.encoder.parameters()
+        yield from self.crf.parameters()
 
     def fine_params(self):
         yield from self.embed.parameters()
+        yield from self.time_signal.parameters()
         yield from self.crf.parameters()

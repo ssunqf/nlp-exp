@@ -15,7 +15,7 @@ class TaggerDataset(data.Dataset):
     def __init__(self, path: str, fields: List[data.Field],
                  **kwargs):
         if not isinstance(fields[0], (tuple, list)):
-            fields = [('text', fields[0]), ('tags', fields[1])]
+            fields = [('html2text', fields[0]), ('tags', fields[1])]
 
         examples = []
 

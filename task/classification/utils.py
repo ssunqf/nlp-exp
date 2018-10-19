@@ -1,9 +1,10 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
-
-#!/usr/bin/env python3.6
-# -*- coding: utf-8 -*-
+import re
 from bs4 import Tag, BeautifulSoup
+from typing import List, Optional, Dict
+import zlib
+
 
 def dbConnect():
     import asyncpg
@@ -11,9 +12,6 @@ def dbConnect():
                            user='sunqf', password='840422',
                            database='sunqf',
                            command_timeout=60)
-
-
-import zlib
 
 
 def compress(html: str) -> bytes:
@@ -110,3 +108,51 @@ def html2text(data):
         return [html2text(i) for i in data]
     else:
         return data
+
+
+class Entity:
+    def __init__(self, knowledge: Dict, label: Dict):
+        self.knowledge = knowledge
+        self.label = label
+
+    def title(self):
+        return dictWalk(self.knowledge, ['title'])
+
+    def type(self) -> Optional[str]:
+        title = dictWalk(self.knowledge, ['attrs', 'lemma_title'])
+        if title:
+            res = re.findall('(?<=（).*(?=）_百度百科)', title)
+            if len(res) > 0:
+                return res[0]
+        return None
+
+    def summary(self) -> List[str]:
+        paras = html2text(dictWalk(self.knowledge, ['attrs', 'lemma_summary']))
+        return [t for p in paras for t in splitter(p) if len(t) > 0] if paras and len(paras) > 0 else []
+
+    def infobox(self, isText=True) -> Dict[str, List[str]]:
+        box = dictWalk(self.knowledge, ['attrs', 'infobox'])
+        if isText:
+            box = html2text(box)
+        return box if box else {}
+
+    def open_tags(self) -> List[str]:
+        tags = html2text(dictWalk(self.knowledge, ['attrs', 'open_tags']))
+        return tags if tags else []
+
+    def keywords(self) -> List[str]:
+        t = dictWalk(self.knowledge, ['attrs', 'lemma_title'])
+        text = dictWalk(self.knowledge, ['keywords'])
+        raws = [word.replace('###', ' ').replace(t, '') if t else word.replace('###', ' ')
+                for word in re.sub('(?<=[A-Za-z.])[ ]+(?=[A-Za-z.])', '###', text if text else '').split()]
+        return [i for i in raws if len(i) > 0]
+
+    def labels(self) -> List[str]:
+
+        def _filter():
+            for k, v in self.label.items():
+                if 'flag' in v and v['flag'] == 'manual' and 'mask' in v and v['mask'] == 1:
+                    yield k
+
+        return list(_filter())
+
