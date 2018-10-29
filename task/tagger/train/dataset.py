@@ -15,7 +15,7 @@ class TaggerDataset(data.Dataset):
     def __init__(self, path: str, fields: List[data.Field],
                  **kwargs):
         if not isinstance(fields[0], (tuple, list)):
-            fields = [('html2text', fields[0]), ('tags', fields[1])]
+            fields = [('text', fields[0]), ('tags', fields[1])]
 
         examples = []
 
@@ -25,7 +25,7 @@ class TaggerDataset(data.Dataset):
                 if 0 < len(items) < 150:
                     items = [t.rsplit('#', maxsplit=1) for t in items]
                     tokens = [t[0] for t in items]
-                    tags = [t[1][0:2] for t in items]
+                    tags = [t[1] for t in items]
                     examples.append(data.Example.fromlist([tokens, tags], fields))
 
         super(TaggerDataset, self).__init__(examples, fields, **kwargs)

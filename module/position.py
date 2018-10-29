@@ -42,8 +42,8 @@ class TimeSignal(nn.Module):
 
     def forward(self, input, batch_first=False):
         if batch_first:
-            batch_first, max_len = input.size()
-            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(0).expand(batch_first, -1, -1)
+            batch_size, max_len = input.size()
+            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(0).expand(batch_size, -1, -1)
         else:
-            max_len, batch_first = input.size()
-            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(1).expand(-1, batch_first, -1)
+            max_len, batch_size = input.size()
+            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(1).expand(-1, batch_size, -1)

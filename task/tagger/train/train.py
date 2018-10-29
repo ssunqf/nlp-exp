@@ -147,7 +147,7 @@ class Trainer:
         print('loading dataset.')
         if stage == COARSE_STAGE:
             partial_train, partial_valid, partial_test = TaggerDataset.splits([text_field, tag_field],
-                                                                              prefix=config.full_prefix,
+                                                                              prefix=config.partial_prefix,
                                                                               train=config.train,
                                                                               valid=config.valid,
                                                                               test=config.test)
@@ -224,7 +224,7 @@ class Config:
     hidden_mode = 'CNN'
     hidden_dim = 200
     hidden_layers = 3
-    dropout = 0.5
+    dropout = 0.3
     atten_heads = 10
     num_blocks=2
     assert hidden_dim % atten_heads == 0

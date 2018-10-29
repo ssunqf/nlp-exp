@@ -5,13 +5,13 @@ from torchtext import data
 from torchtext.data import Dataset
 import torch
 from typing import List
-from task.tagger.train.vocab import TagVocab
+from task.transformer.vocab import TagVocab
 
 
 class PartialField(data.Field):
     def __init__(self, **kwargs):
         self.with_type = False
-        super(PartialField, self).__init__(pad_token='S_O', unk_token=None, **kwargs)
+        super(PartialField, self).__init__(**kwargs)
         self.vocab_cls = TagVocab
 
     def build_vocab(self, *args, **kwargs):
@@ -115,9 +115,4 @@ class PartialField(data.Field):
             masks = masks.contiguous()
         else:
             masks = masks.cuda(device)
-            if self.include_lengths:
-                lengths = lengths.cuda(device)
-        if self.include_lengths:
-            return masks, lengths, arr
         return masks, arr
-

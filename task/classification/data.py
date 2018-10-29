@@ -35,6 +35,7 @@ async def extract(vectorizer):
 
 
 if __name__ == '__main__':
+
     vectorizer = BOWVectorizer(config.word_embed_path, config.mode)
     loop = asyncio.get_event_loop()
     loop.run_until_complete(extract(vectorizer))

@@ -22,10 +22,22 @@ dicts = [('PLACE', load_dict('./dic/place.dic')),
          ('O',     load_dict('./dic/common.dic'))]
 
 
+
+def load_dict(path: str):
+    assert os.path.exists(path)
+    with open(path, 'r') as f:
+        return set([line.strip() for line in f if len(line.strip()) > 0])
+
+
+dicts = [('PLACE', load_dict('../dic/place.clean')),
+         ('NAME',  load_dict('./dic/name.clean')),
+         ('O',     load_dict('./dic/common.clean.uniq'))]
+
+
 if __name__ == '__main__':
 
     args = arg_parser.parse_args()
-    with open(args.input) as reader, open(args.output, 'w') as writer, open(args.dict) as dict_file:
+    with open(args.input) as reader, open(args.output, 'w') as writer:
         for sentence in reader:
             chars = []
             tags = []
@@ -40,6 +52,21 @@ if __name__ == '__main__':
                             if field[0] in dict and field[1].endswith(field[0]):
                                 t_tags = ['S_'] if len(t_chars) == 1 else \
                                     ['B_'] + ['M_'+name] * (len(t_chars)-2) + ['E_']
+                                contain = True
+                                break
+
+                        if not contain:
+                            t_tags = ['S_*'] if len(t_chars) == 1 else \
+                                ['B_*'] + ['*'] * (len(t_chars) - 2) + ['E_*']
+                    items = field.split('|||')
+                    items[0] = items[0].strip()
+                    t_chars = [word for t, word in utils.replace_entity(items[0])]
+                    if len(items) == 2 and len(items[0]) >= 1:
+                        contain = False
+                        for name, dict in dicts:
+                            if items[0] in dict and items[1].endswith(items[0]):
+                                t_tags = ['S_'+name] if len(t_chars) == 1 else \
+                                    ['B_'+name] + ['M_'+name] * (len(t_chars)-2) + ['E_'+name]
                                 contain = True
                                 break
 

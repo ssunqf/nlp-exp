@@ -7,6 +7,7 @@ import math
 
 # https://github.com/vdumoulin/conv_arithmetic
 # https://arxiv.org/pdf/1603.07285.pdf
+# https://arxiv.org/pdf/1803.01271.pdf
 
 
 def _pad_size(kernel, dilation):
@@ -101,11 +102,11 @@ class RNNBlock(nn.Module):
 
         assert hidden_model in ['LSTM', 'GRU']
         self.rnn_layer = getattr(nn, hidden_model)(hidden_dim, hidden_dim,
-                                                   hidden_layers=hidden_layers,
+                                                   num_layers=hidden_layers,
                                                    bidirectional=True,
                                                    dropout=dropout)
 
-        self.atten_layer = MultiHead(hidden_dim, num_heads=atten_heads)
+        # self.atten_layer = MultiHead(hidden_dim, num_heads=atten_heads)
 
     def fold(self, output: torch.Tensor):
         dim = output.size(-1) // 2
@@ -117,7 +118,7 @@ class RNNBlock(nn.Module):
 
         hidden = input + self.fold(hidden)
 
-        hidden, _ = self.atten_layer(hidden, mask)
+        # hidden, _ = self.atten_layer(hidden, mask)
         return hidden
 
 
@@ -139,7 +140,7 @@ class Recurrent(nn.Module):
         )
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor, last_state=None):
-        return self.layers(self.input_transformer(input), mask)
+        return self.blocks(self.input_transformer(input), mask)
 
 
 class Encoder(nn.Module):
@@ -164,10 +165,6 @@ class Encoder(nn.Module):
                                            num_blocks=num_blocks,
                                            dropout=dropout)
 
-    def forward(self, input: torch.Tensor, lengths: torch.Tensor):
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
         max_len, batch_size, *_ = input.size()
-        mask = input.new_ones(max_len, batch_size, dtype=torch.int8)
-        for id, len in enumerate(lengths):
-            if len < max_len:
-                mask[len:, id] = 0
         return self.hidden_module(input, mask)

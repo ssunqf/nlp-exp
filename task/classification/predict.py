@@ -37,8 +37,8 @@ async def predict(vectorizer, model, label2id: dict):
                 infobox = vectorizer.feature(entity.infobox())
                 type = vectorizer.feature(entity.type())
 
-                feature = torch.from_numpy(np.concatenate((summary, tags, keywords, infobox, type))).unsqueeze(0)
-                predict = model(feature).squeeze(0)
+                feature = torch.from_numpy(np.concatenate((summary, tags, keywords, infobox, type))).unsqueeze(0).cuda()
+                predict = model(feature).squeeze(0).cpu()
 
                 batch_feature.append(feature)
                 batch_label.append(labels[0] + '\t' + url)
