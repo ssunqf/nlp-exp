@@ -6,10 +6,9 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math, copy
 from torch.autograd import Variable
-from .base import clones, LayerNorm, SublayerConnection, PositionwiseFeedForward
+from .base import clones, AddNormLayer, PositionwiseFeedForward, PAD
 from .lattice import LatticeEncoderLayer
 
 
@@ -36,15 +35,15 @@ class PositionalEncoding(nn.Module):
 
 # token embedding  * math.sqrt(embed_dim) + pos_emb
 class Embeddings(nn.Module):
-    def __init__(self, vocab_size, embed_dim, dropout=0.1):
+    def __init__(self, vocab_size, embed_dim, padding_idx=None, dropout=0.3):
         super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab_size, embed_dim)
+        self.lut = nn.Embedding(vocab_size, embed_dim, padding_idx=padding_idx)
         self.pos = PositionalEncoding(embed_dim)
         self.dropout = nn.Dropout(p=dropout)
         self.embed_dim = embed_dim
 
     def forward(self, x):
-        return self.dropout(self.pos(self.lut(x) * math.sqrt(self.embed_dim)))
+        return self.dropout(self.pos(self.lut(x)))
 
 
 # -------------------------------------------------------
@@ -52,11 +51,11 @@ class Embeddings(nn.Module):
 # attention -> (add + norm) -> ffn -> (add + norm)
 class EncoderLayer(nn.Module):
     "Encoder is made up of self-attn and feed forward (defined below)"
-    def __init__(self, size, self_attn, feed_forward, dropout):
+    def __init__(self, size, self_attn, feed_forward, dropout=0.3):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.sublayer = clones(AddNormLayer(size, dropout), 2)
         self.size = size
 
     def forward(self, x, mask):
@@ -71,12 +70,13 @@ class EncoderLayer(nn.Module):
 
 from torchtext.vocab import Vocab
 from torchtext import data
-from task.transformer.vocab import TagVocab
+from task.pretrained.transformer.vocab import TagVocab
 from typing import List
 from .crf import LinearCRF, MaskedCRF
 from collections import defaultdict
 
-from .encoder import Encoder, LatticeEncoder, MultiHeadedAttention
+from .attention import MultiHeadedAttention
+from .encoder import Encoder, LatticeEncoder, LSTMEncoder
 
 class Tagger(nn.Module):
     def __init__(self, words: Vocab, tags: TagVocab,
@@ -186,8 +186,10 @@ class Tagger(nn.Module):
                         yield '%s||%s]] ' % (word, tag[2:])
                     elif tag.startswith('S_'):
                         yield '[[%s||%s]] ' % (word, tag[2:])
-                    else:
+                    elif tag.startswith('M_'):
                         yield word
+                    else:
+                        yield word + ' '
 
             pred_tag = [self.tags.itos[tag_id] for tag_id in pred_tag]
             gold_tag = gold_tags[i][:text_len[i]]
@@ -254,34 +256,55 @@ class Tagger(nn.Module):
 
     @staticmethod
     def create(words: Vocab, tags: TagVocab,
-                 embedding_dim: int,
-                 encoder_dim: int, encoder_depth: int, attention_num_head: int):
-        embedding = Embeddings(len(words), embedding_dim)
-        attention = MultiHeadedAttention(attention_num_head, encoder_dim, atten_window_size=-1, dropout=0.2)
-        ffn = PositionwiseFeedForward(encoder_dim, encoder_dim, dropout=0.2)
-        transformer = EncoderLayer(encoder_dim, attention, ffn, dropout=0.2)
+               embedding_dim: int,
+               encoder_dim: int, encoder_depth: int,
+               attention_num_head: int, atten_window_size=None):
+        embedding = Embeddings(len(words), embedding_dim, padding_idx=words.stoi[PAD], dropout=0.3)
+        attention = MultiHeadedAttention(attention_num_head, encoder_dim, atten_window_size=atten_window_size, dropout=0.3)
+        ffn = PositionwiseFeedForward(encoder_dim, encoder_dim, dropout=0.3)
+        transformer = EncoderLayer(encoder_dim, attention, ffn, dropout=0.3)
         encoder = Encoder(transformer, encoder_depth)
-        crf = MaskedCRF(encoder_dim, len(tags),
-                        tags.begin_constraints, tags.transition_constraints, tags.end_constraints)
+        crf = MaskedCRF(encoder_dim, len(tags), tags.transition_constraints)
 
         return Tagger(words, tags, embedding, encoder, crf)
 
     @staticmethod
     def createLattice(words: Vocab, tags: TagVocab,
+                      embedding_dim: int, encoder_dim: int, encoder_depth: int,
+                      attention_num_head: int,
+                      pretrained_emb: nn.Embedding, max_subword_len: int):
+
+        char_embedding = Embeddings(len(words), embedding_dim, padding_idx=words.stoi[PAD], dropout=0.3)
+        attention = MultiHeadedAttention(attention_num_head, encoder_dim, atten_window_size=None, dropout=0.3)
+        ffn = PositionwiseFeedForward(encoder_dim, encoder_dim, dropout=0.3)
+        transformer = EncoderLayer(encoder_dim, attention, ffn, dropout=0.3)
+
+        latticeLayer = LatticeEncoderLayer(
+            encoder_dim, pretrained_emb, max_subword_len, copy.deepcopy(ffn), dropout=0.3)
+        encoder = LatticeEncoder(transformer, encoder_depth, latticeLayer)
+        # crf = LinearCRF(encoder_dim, len(tags))
+        crf = MaskedCRF(encoder_dim, len(tags), tags.transition_constraints)
+
+        return Tagger(words, tags, char_embedding, encoder, crf)
+
+
+    @staticmethod
+    def createLSTM(words: Vocab, tags: TagVocab,
                       embedding_dim: int, encoder_dim: int, encoder_depth: int, attention_num_head: int,
                       pretrained_emb: nn.Embedding, max_subword_len: int):
 
-        char_embedding = Embeddings(len(words), embedding_dim)
-        attention = MultiHeadedAttention(attention_num_head, encoder_dim, atten_window_size=-1, dropout=0.2)
+        # char_embedding = Embeddings(len(words), embedding_dim, padding_idx=words.stoi[PAD])
+        char_embedding = nn.Embedding(len(words), embedding_dim, padding_idx=words.stoi[PAD])
+        attention = MultiHeadedAttention(attention_num_head, encoder_dim, atten_window_size=None, dropout=0.2)
         ffn = PositionwiseFeedForward(encoder_dim, encoder_dim, dropout=0.2)
-        transformer = EncoderLayer(encoder_dim, attention, ffn, dropout=0.2)
-
+        # transformer = EncoderLayer(encoder_dim, attention, ffn, dropout=0.2)
+        encoder = LSTMEncoder(encoder_dim, encoder_depth, attention, 0.2)
         latticeLayer = LatticeEncoderLayer(
             encoder_dim, pretrained_emb, max_subword_len, copy.deepcopy(ffn), dropout=0.2)
-        encoder = LatticeEncoder(transformer, encoder_depth, latticeLayer)
+        # encoder = Encoder(lstm, encoder_depth, latticeLayer)
+        # encoder = Encoder(lstm, encoder_depth)
         # crf = LinearCRF(encoder_dim, len(tags))
-        crf = MaskedCRF(encoder_dim, len(tags),
-                        tags.begin_constraints, tags.transition_constraints, tags.end_constraints)
+        crf = MaskedCRF(encoder_dim, len(tags), tags.transition_constraints)
 
         return Tagger(words, tags, char_embedding, encoder, crf)
 
@@ -293,7 +316,8 @@ class Tagger(nn.Module):
         from module.encoder import Encoder
         encoder = Encoder(embedding_dim, 'CNN', encoder_dim, encoder_depth, attention_num_head)
         # crf = LinearCRF(encoder_dim, len(tags))
-        crf = MaskedCRF(encoder_dim, len(tags),
-                        tags.begin_constraints, tags.transition_constraints, tags.end_constraints)
+        crf = MaskedCRF(encoder_dim, len(tags), tags.transition_constraints)
 
         return Tagger(words, tags, char_embedding, encoder, crf)
+
+

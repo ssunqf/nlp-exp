@@ -1,11 +1,9 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
-import six
 from torchtext import data
 from torchtext.data import Dataset
 import torch
-from typing import List
-from task.transformer.vocab import TagVocab
+from task.pretrained.transformer.vocab import TagVocab
 
 
 class PartialField(data.Field):
@@ -35,6 +33,7 @@ class PartialField(data.Field):
 
         self.vocab = self.vocab_cls(counter, specials=specials, **kwargs)
 
+    '''
     def pad(self, minibatch):
         """Pad a batch of examples using this field.
 
@@ -64,6 +63,7 @@ class PartialField(data.Field):
         if self.include_lengths:
             return (padded, lengths)
         return padded
+    '''
 
     def numericalize(self, arr, device=None, train=True):
         """Turn a batch of examples that use this field into a Variable.
@@ -89,30 +89,8 @@ class PartialField(data.Field):
                              "(data batch, batch lengths).")
         if isinstance(arr, tuple):
             arr, lengths = arr
-            lengths = torch.LongTensor(lengths)
+            lengths = torch.LongTensor(lengths, device=device)
 
-        def _dense_mask(seqs: List[List[str]], batch_first: bool):
-            batch_size = len(seqs)
-            assert batch_size > 0
-            seq_size = len(seqs[0])
+        masks = self.vocab.dense_mask(arr, self.batch_first, device=device)
 
-            masks = torch.ByteTensor(batch_size, seq_size, len(self.vocab)).zero_() \
-                if batch_first else torch.ByteTensor(seq_size, batch_size, len(self.vocab)).zero_()
-            for i, seq in enumerate(seqs):
-                for j, tok in enumerate(seq):
-                    if tok != '*':
-                        id = self.vocab.stoi[tok]
-                        if batch_first:
-                            masks[i, j] = 1
-                            masks[i, j, id] = 0
-                        else:
-                            masks[j, i] = 1
-                            masks[j, i, id] = 0
-            return masks
-
-        masks = self.vocab.dense_mask(arr, self.batch_first)
-        if device == -1:
-            masks = masks.contiguous()
-        else:
-            masks = masks.cuda(device)
         return masks, arr

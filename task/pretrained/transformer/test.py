@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import torch
-from .transformer import Encoder, CRF
+from task.pretrained.transformer import Encoder, LinearCRF
 from module.encoder import Encoder
 
 encoder = Encoder(20, 'CNN', 20, 5, 10)
 
-crf = CRF(20, 10)
+crf = LinearCRF(20, 10)
 
 tests = torch.randn(10, 20).unsqueeze(-2).expand(10, 2, 20)
 lens = [10, 10]

@@ -8,14 +8,14 @@ import pickle
 import collections
 from typing import Tuple
 import torch
-from torch import nn, optim
+from torch import optim
 from torchtext import data
 from torchtext.data.iterator import BucketIterator
-from .transformer import Tagger, Embeddings, LayerNorm
+from task.pretrained.transformer import Tagger
 from tqdm import tqdm
-from task.transformer.dataset import TaggerDataset
-from task.transformer.field import PartialField
-from module import utils
+from task.pretrained.transformer.dataset import TaggerDataset
+from task.pretrained.transformer.field import PartialField
+from .base import BOS, EOS, PAD
 
 COARSE_STAGE = 'coarse'
 FINE_STAGE = 'fine'
@@ -31,7 +31,7 @@ class Trainer:
         self.device = device
         self.stage = stage
         self.optimizer = optim.Adam(self.model.coarse_params() if stage == COARSE_STAGE else self.model.fine_params(),
-                                    lr=2e-3)
+                                    lr=1e-3)
 
         self.train_it, self.valid_it, self.test_it = \
             partial_train_it, partial_valid_it, partial_test_it
@@ -142,8 +142,8 @@ class Trainer:
 
     @classmethod
     def create(cls, config, stage):
-        text_field = data.Field(include_lengths=True)
-        tag_field = PartialField()
+        text_field = data.Field(include_lengths=True, init_token=BOS, eos_token=EOS, pad_token=PAD)
+        tag_field = PartialField(init_token=BOS, eos_token=EOS, pad_token=PAD)
         print('loading dataset.')
         if stage == COARSE_STAGE:
             partial_train, partial_valid, partial_test = TaggerDataset.splits(
@@ -172,22 +172,22 @@ class Trainer:
             with open(config.cached_dataset_prefix + '.tag.vocab', 'wb') as f:
                 pickle.dump(tag_field.vocab, f)
 
-
+        device = torch.device("cuda" if config.use_cuda else "cpu")
 
         if stage == COARSE_STAGE:
             train_it, valid_it, test_it = \
                 BucketIterator.splits([partial_train, partial_valid, partial_test],
                                       batch_sizes=config.batch_sizes,
-                                      sort_key=TaggerDataset.sort_key,
-                                      device=0 if config.use_cuda else -1)
+                                      sort_within_batch=True,
+                                      device=device)
         elif stage == FINE_STAGE:
             train_it, valid_it, test_it = \
                 BucketIterator.splits([full_train, full_valid, full_test],
                                       batch_sizes=config.batch_sizes,
-                                      sort_key=TaggerDataset.sort_key,
-                                      device=0 if config.use_cuda else -1)
+                                      sort_within_batch=True,
+                                      device=device)
 
-        device = torch.device("cuda" if config.use_cuda else "cpu")
+        train_it.repeat = True
 
         model = Tagger.create(
                        text_field.vocab, tag_field.vocab,
@@ -200,8 +200,8 @@ class Trainer:
 
     @classmethod
     def createLattice(cls, config, stage):
-        text_field = data.Field(include_lengths=True)
-        tag_field = PartialField()
+        text_field = data.Field(include_lengths=True, init_token=BOS, eos_token=EOS, pad_token=PAD)
+        tag_field = PartialField(init_token=BOS, eos_token=EOS, pad_token=PAD)
         print('loading dataset.')
 
         from .lattice import LatticeField
@@ -236,28 +236,29 @@ class Trainer:
             with open(config.cached_dataset_prefix + '.tag.vocab', 'wb') as f:
                 pickle.dump(tag_field.vocab, f)
 
-
+        device = torch.device("cuda" if config.use_cuda else "cpu")
 
         if stage == COARSE_STAGE:
             train_it, valid_it, test_it = \
                 BucketIterator.splits([partial_train, partial_valid, partial_test],
                                       batch_sizes=config.batch_sizes,
-                                      sort_key=TaggerDataset.sort_key,
-                                      device=0 if config.use_cuda else -1)
+                                      sort_within_batch=True,
+                                      device=device)
         elif stage == FINE_STAGE:
             train_it, valid_it, test_it = \
                 BucketIterator.splits([full_train, full_valid, full_test],
                                       batch_sizes=config.batch_sizes,
-                                      sort_key=TaggerDataset.sort_key,
-                                      device=0 if config.use_cuda else -1)
+                                      sort_within_batch=True,
+                                      device=device)
 
-        device = torch.device("cuda" if config.use_cuda else "cpu")
+        train_it.repeat = True
 
         # model = Tagger.createLattice(
         #               text_field.vocab, tag_field.vocab,
         #               config.embedding_dim, config.encoder_dim, config.encoder_depth, config.attention_num_head,
         #               lattice.word_emb, lattice.max_sub_len)
-        model = Tagger.createLattice(
+        # model = Tagger.createLattice(
+        model = Tagger.createLSTM(
             text_field.vocab, tag_field.vocab,
             config.embedding_dim, config.encoder_dim, config.encoder_depth, config.attention_num_head,
             lattice.word_emb, lattice.max_sub_len
@@ -290,10 +291,10 @@ class Config:
 
     # model
     vocab_size = 100
-    embedding_dim = 100
-    encoder_dim = 100
-    attention_num_head = 10
-    encoder_depth = 5
+    embedding_dim = 512
+    encoder_dim = 512
+    attention_num_head = 8
+    encoder_depth = 2
 
     use_cuda = torch.cuda.is_available()
 
@@ -317,7 +318,7 @@ if __name__ == '__main__':
 
     config = Config()
 
-    trainer = Trainer.create(config, args.stage)
+    trainer = Trainer.createLattice(config, args.stage)
 
     if args.checkpoint is not None:
         trainer.load_checkpoint(args.checkpoint)
