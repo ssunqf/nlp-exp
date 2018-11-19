@@ -156,7 +156,7 @@ def train(model: Classifier, train_data, valid_data, test_data, label2id: dict, 
                 mean_f = fscore.mean()
                 if mean_f > best_mean_f1:
                     best_mean_f1 = mean_f
-#                    torch.save(model, '%s_%0.3f.pt' % (config.model_prefix, best_mean_f1))
+                    torch.save(model, '%s_%0.3f.pt' % (config.model_prefix, best_mean_f1))
 
 
 if __name__ == '__main__':
@@ -173,7 +173,7 @@ if __name__ == '__main__':
     if config.use_cuda:
         model = model.cuda()
 
-    weight_decays=[0.000004, 0.000003, 0.000002, 0.000001]
+    weight_decays=[0.00004, 0.00003, 0.00002, 0.00001]
     for i in weight_decays:
         train(model, train_data, valid_data, test_data, label2id, max_epoch=30, weight_decay=i)
 
