@@ -3,6 +3,7 @@
 
 import numpy as np
 from pyhanlp import HanLP
+import gzip
 
 def normalize(matrix):
     norm = np.sqrt(np.sum(matrix * matrix, axis=1))
@@ -52,7 +53,7 @@ class BOWVectorizer:
         vectors = {}
         iw = []
         wi = {}
-        with open(path, encoding='utf-8', errors='ignore') as f:
+        with gzip.open(path, mode='rt', compresslevel=6) as f:
             first_line = True
             for line in f:
                 if first_line:

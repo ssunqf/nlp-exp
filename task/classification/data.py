@@ -4,13 +4,14 @@
 import re
 import json
 from typing import List, Optional, Dict
-from .utils import dbConnect, dictWalk, html2text, splitter
+from .utils import dbConnect, Entity
 import asyncio
 from .vectorize import BOWVectorizer
 import sys
 import numpy as np
 from .config import config
 from tqdm import tqdm
+<<<<<<< HEAD
 import concurrent
 
 
@@ -57,10 +58,13 @@ class Entity:
                     yield k
 
         return list(_filter())
+=======
+>>>>>>> f5963192400b0095b40e1a0f9f9ffdf93487fa6b
 
 
 async def extract(vectorizer):
     db = await dbConnect()
+<<<<<<< HEAD
     with tqdm(desc='iteration') as t:
         async with db.transaction():
             async for record in db.cursor('select url, knowledge, label from label_entity order by keyword'):
@@ -80,6 +84,26 @@ async def extract(vectorizer):
                     feature = np.concatenate((summary, tags, keywords, infobox, type))
                     labels = entity.labels()
                     print(url + '\t' + ' '.join(labels) + '\t' + ' '.join([str(i) for i in feature.round(6)]))
+=======
+    async with db.transaction():
+        async for record in db.cursor('select url, knowledge, label from label_entity order by keyword'):
+            url = record['url']
+            knowledge = json.loads(record['knowledge'])
+            label = json.loads(record['label'])
+
+            entity = Entity(knowledge, label)
+            if len(entity.labels()) > 0:
+                summary = vectorizer.feature(entity.summary())
+                tags = vectorizer.feature(entity.open_tags())
+                keywords = vectorizer.feature(entity.keywords())
+                infobox = vectorizer.feature(entity.infobox())
+                type = vectorizer.feature(entity.type())
+
+                feature = np.concatenate((summary, tags, keywords, infobox, type)).round(6)
+                labels = entity.labels()
+                print(url + '\t' + ' '.join(labels) + '\t' + ' '.join([str(int(i*1e6)/1e6) for i in feature]))
+>>>>>>> f5963192400b0095b40e1a0f9f9ffdf93487fa6b
+
 
 if __name__ == '__main__':
     vectorizer = BOWVectorizer(config.word_embed_path, config.mode)

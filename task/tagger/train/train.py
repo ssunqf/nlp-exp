@@ -112,6 +112,7 @@ class Trainer:
 
                 self.checkpoint(checkpoint_losses, valid_loss)
 
+                print('scale ratio: %f' % (self.model.time_signal.scaled_factor.data))
                 print("%s: train loss=%.6f\t\tvalid loss=%.6f" % (self.stage, total_loss/total_sen, valid_loss))
                 print("speed:   train %.2f sentence/s  valid %.2f sentence/s\n\n" %
                       (train_speed, len(self.valid_it) / (time.time() - inference_start)))
@@ -157,9 +158,9 @@ class Trainer:
                                                                  test=config.test)
 
         print('build vocab.')
-        if stage == FINE_STAGE or (os.path.exists(config.cached_dataset_prefix + '.text.vocab')
-                                   and os.path.exists(config.cached_dataset_prefix + '.text.vocab')):
-            with open(config.cached_dataset_prefix + '.text.vocab', 'rb') as f:
+        if stage == FINE_STAGE or (os.path.exists(config.cached_dataset_prefix + '.html2text.vocab')
+                                   and os.path.exists(config.cached_dataset_prefix + '.html2text.vocab')):
+            with open(config.cached_dataset_prefix + '.html2text.vocab', 'rb') as f:
                 text_field.vocab = pickle.load(f, encoding='utf-8')
             with open(config.cached_dataset_prefix + '.tag.vocab', 'rb') as f:
                 tag_field.vocab = pickle.load(f)
@@ -167,7 +168,7 @@ class Trainer:
             text_field.build_vocab(partial_train, full_train, min_freq=config.text_min_freq)
             tag_field.build_vocab(partial_train, full_train, min_freq=config.tag_min_freq)
 
-            with open(config.cached_dataset_prefix + '.text.vocab', 'wb') as f:
+            with open(config.cached_dataset_prefix + '.html2text.vocab', 'wb') as f:
                 pickle.dump(text_field.vocab, f)
             with open(config.cached_dataset_prefix + '.tag.vocab', 'wb') as f:
                 pickle.dump(tag_field.vocab, f)
@@ -218,10 +219,10 @@ class Config:
     common_size = 1000
 
     # model
-    embedding_dim = 1000
+    embedding_dim = 100
     # hidden_mode = 'GRU'
     hidden_mode = 'CNN'
-    hidden_dim = 2000
+    hidden_dim = 200
     hidden_layers = 3
     dropout = 0.3
     atten_heads = 10

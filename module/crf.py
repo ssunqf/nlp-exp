@@ -68,7 +68,6 @@ class CRF(nn.Module):
 
     def score_sentence(self, emissions, tags, lens: List[int]):
         '''
-
         :param emissions: Variable(FloatTensor([seq_len, batch, num_lables]))
         :param tags: Variable(FloatTensor([seq_len, batch]))
         :param lens: sentence lengths

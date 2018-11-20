@@ -56,6 +56,7 @@ class TagVocab(Vocab):
 
         masks = torch.ByteTensor(batch_size, seq_size, len(self)).zero_() \
             if batch_first else torch.ByteTensor(seq_size, batch_size, len(self)).zero_()
+
         for bid, seq in enumerate(seqs):
             curr_mask = masks[bid] if batch_first else masks[:, bid]
             for sid, tok in enumerate(seq):

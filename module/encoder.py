@@ -22,38 +22,34 @@ class ConvLayer(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.layers = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Conv1d(input_dim, output_dim,
+                      kernel_size=kernel_size, padding=_pad_size(kernel_size, dilation), dilation=dilation),
+            nn.BatchNorm1d(input_dim),
+            nn.ReLU(),
         )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return self.layers(input)
+        output = self.layers(input)
+        return input + output if self.input_dim == self.output_dim else output
+
 
 class ConvBlock(nn.Module):
     def __init__(self, input_dim, output_dim, num_layer, kernel_size, dropout=0.2):
         super(ConvBlock, self).__init__()
         layers = []
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+        input_dim = input_dim
         dilation = 1
         for l in range(num_layer):
-            layers.append(nn.Dropout(dropout))
-            layers.append(nn.Conv1d(input_dim, output_dim,
-                      kernel_size=kernel_size, padding=_pad_size(kernel_size, dilation), dilation=dilation))
-            layers.append(nn.BatchNorm1d(input_dim))
-            layers.append(nn.ReLU())
+            layers.append(ConvLayer(input_dim, output_dim, kernel_size, dilation, dropout=dropout))
             input_dim = output_dim
             dilation *= 2
 
         self.layers = nn.Sequential(*layers)
 
-        if self.input_dim != self.output_dim:
-            self.conv_in = nn.Sequential(
-                    nn.Dropout(dropout),
-                    nn.Conv1d(input_dim, output_dim, kernel_size=1, padding=0, dilation=0),
-                    nn.BatchNorm1d(self.input_dim),
-                    nn.ReLU())
-
     def forward(self, input: torch.Tensor):
-        return self.layers(input) + (input if self.input_dim == self.output_dim else self.conv_in(input))
+        return self.layers(input)
+
 
 class CNN(nn.Module):
     r"""
@@ -106,11 +102,11 @@ class RNNBlock(nn.Module):
 
         assert hidden_model in ['LSTM', 'GRU']
         self.rnn_layer = getattr(nn, hidden_model)(hidden_dim, hidden_dim,
-                                                   hidden_layers=hidden_layers,
+                                                   num_layers=hidden_layers,
                                                    bidirectional=True,
                                                    dropout=dropout)
 
-        self.atten_layer = MultiHead(hidden_dim, num_heads=atten_heads)
+        # self.atten_layer = MultiHead(hidden_dim, num_heads=atten_heads)
 
     def fold(self, output: torch.Tensor):
         dim = output.size(-1) // 2
@@ -122,7 +118,7 @@ class RNNBlock(nn.Module):
 
         hidden = input + self.fold(hidden)
 
-        hidden, _ = self.atten_layer(hidden, mask)
+        # hidden, _ = self.atten_layer(hidden, mask)
         return hidden
 
 
@@ -144,7 +140,7 @@ class Recurrent(nn.Module):
         )
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor, last_state=None):
-        return self.layers(self.input_transformer(input), mask)
+        return self.blocks(self.input_transformer(input), mask)
 
 
 class Encoder(nn.Module):
@@ -169,10 +165,6 @@ class Encoder(nn.Module):
                                            num_blocks=num_blocks,
                                            dropout=dropout)
 
-    def forward(self, input: torch.Tensor, lengths: torch.Tensor):
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
         max_len, batch_size, *_ = input.size()
-        mask = input.new_ones(max_len, batch_size, dtype=torch.int8)
-        for id, len in enumerate(lengths):
-            if len < max_len:
-                mask[len:, id] = 0
         return self.hidden_module(input, mask)

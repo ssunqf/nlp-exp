@@ -21,10 +21,10 @@ with open(args.input) as input, open(args.output, 'w') as output:
         if len(line) > 0:
             words = line.split()
             if with_type is None:
-                with_type = functools.reduce(lambda x, y: x and y, [w.find('_') != -1 for w in words])
+                with_type = functools.reduce(lambda x, y: x and y, [w.find('#') != -1 for w in words])
 
             if with_type:
-                word2type = [w.rsplit('_', 1) for w in words]
+                word2type = [w.rsplit('#', 1) for w in words]
                 chars2type = [(list(utils.replace_entity(word)), tag) for word, tag in word2type]
                 text = [(type, char) for chars, _ in chars2type for type, char in chars]
                 text = [char for type, char in text]

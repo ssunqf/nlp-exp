@@ -30,16 +30,20 @@ class TimeSignal(nn.Module):
         times = torch.arange(0, max_length).unsqueeze(1) * inv_timescales.unsqueeze(0)
 
         self.embedding = nn.Parameter(torch.cat([times.sin(), times.cos()], - 1), requires_grad=False)
-
         self.scaled_factor = nn.Parameter(torch.ones(1))
 
     def parameters(self):
         yield self.scaled_factor
 
+    def to(self, *args, **kwargs):
+        self.embedding = self.embedding.to(*args, **kwargs)
+        super(self).to(*args, **kwargs)
+        return self
+
     def forward(self, input, batch_first=False):
         if batch_first:
-            batch_first, max_len = input.size()
-            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(0).expand(batch_first, -1, -1)
+            batch_size, max_len = input.size()
+            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(0).expand(batch_size, -1, -1)
         else:
-            max_len, batch_first = input.size()
-            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(1).expand(-1, batch_first, -1)
+            max_len, batch_size = input.size()
+            return self.scaled_factor * self.embedding[0:max_len].unsqueeze(1).expand(-1, batch_size, -1)
