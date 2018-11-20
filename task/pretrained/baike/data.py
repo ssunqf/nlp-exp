@@ -43,9 +43,10 @@ class LabelField(Field):
                 device=None) -> List[List[Label]]:
         return [[Label(phrase.begin + 1,
                        phrase.end + 1,
-                       torch.LongTensor(
+                       torch.tensor(
                            list(filter(lambda x: x != 0,
                                        [self.vocab.stoi[label] for label in phrase.labels[self.name]])),
+                           dtype=torch.long,
                            device=device)) for phrase in phrases] for phrases in batch]
 
 
@@ -65,12 +66,6 @@ class BaikeDataset(Dataset):
                     words = np.array(words, dtype=np.str)
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
-
-                    if len(examples) > 100000:
-                        break
-
-        from pympler import asizeof
-        #print(asizeof.asized(examples, detail=10).format())
 
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
