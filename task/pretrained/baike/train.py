@@ -134,7 +134,7 @@ class Trainer:
 
                 if step % self.valid_step == 0:
 
-                    valid_losses = self.valid()
+                    valid_losses = self.valid(valid_it)
                     total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
 
                     self.checkpoint(total_valid_loss)
@@ -154,7 +154,7 @@ class Trainer:
                     label_losses = collections.defaultdict(float)
 
                 if train_it.iterations % (self.valid_step) == 0:
-                    for n, scores in self.metrics().items():
+                    for n, scores in self.metrics(valid_it).items():
                         self.summary_writer.add_scalars(
                             'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()}, step)
 
@@ -218,7 +218,7 @@ class Trainer:
 class Config:
     def __init__(self):
         self.root = './baike/preprocess'
-        self.train_file = 'entity.sentence.gz'
+        self.train_file = 'entity.sentence'
 
         self.embedding_size = 256
         self.encoder_size = 256
@@ -239,7 +239,7 @@ class Config:
 
         self.classifier_type = 'softmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
 
-        self.device = torch.device('gpu') if torch.cuda.is_available() else torch.device('cpu')
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # save config
         with open(os.path.join(self.root, self.dir_prefix, 'config.txt'), 'wt') as file:

@@ -111,10 +111,10 @@ def replace_word(word, split_word=True):
         yield ('@integer', word)
     elif numeric.fullmatch(word):
         yield ('@numeric@', word)
-    elif numeric_unit.match(word) is not None:
+    elif numeric_unit.fullmatch(word):
         matched = numeric.match(word)
         yield ('@numeric@', word[matched.pos:matched.endpos])
-        yield ('@unit@', word[matched.endpos])
+        yield ('@unit@', word[matched.endpos:])
     elif word[-1] in 'NSEW' and coordinate.fullmatch(word[:-1]):
         yield ('@coordinate@', word[:-1])
         yield ('@eng_word@', word[-1])

@@ -136,7 +136,7 @@ class LabelClassifier(nn.Module):
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    sum += label.tags.size(0)
+                    sum += 1 # label.tags.size(0)
                     span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     loss += self.loss(feature, label.tags)
