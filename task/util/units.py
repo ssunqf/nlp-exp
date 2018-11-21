@@ -1,4 +1,2 @@
-#!/usr/bin/env python3.6
-# -*- coding: utf-8 -*-
 
-
+(m/s²|°|ʹ|ʹʹ|rad|grad|°|Mm²|km²|m²|cm²|mm²|µm²|nm²|in²|ft²|yd²|mi²|ac|a|m²|g/L|mg/dL|g/L|ppm|s|m|s|C|MAh|kAh|Ah|mAh|C|MA|kA|A|mA|A|MV|kV|V|mV|V|MΩ|kΩ|Ω|mΩ|Ω|kJ|J|kCal|cal|J|THz|GHz|MHz|kHz|Hz|mHz|µHz|Hz|L/100km|mpg|L/100km|lx|Mm|km|hm|dam|m|dm|cm|mm|µm|nm|pm|in|ft|yd|mi|smi|ly|NM|ftm|fur|ua|m|kg|g|dg|cg|mg|µg|ng|pg|oz|lb|st|t|ton|ct|oz t|kg|TW|GW|MW|kW|W|mW|µW|nW|nW|nHz|W|N/m²|GPa|MPa|kPa|hPa|inHg|bar|mbar|mmHg|N/m²|m/s|km/h|mph|m/s|K|°C|K|ML|kL|L|dl|cL|mL|km³|m³|dm³|cm³|mm³|in³|ft³|yd³|mi³|af|bsh|tsp|tbsp|fl oz|cup|pt|qt|gal|tsp Imperial|tbsp Imperial|fl oz Imperial|pt Imperial|qt Imperial|gal Imperial|L		metric_cups (metric cup Imperial)	liters)

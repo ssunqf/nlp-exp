@@ -202,7 +202,9 @@ class Trainer:
         text_voc = TEXT.vocab
         embedding = nn.Embedding(len(text_voc), config.embedding_size)
 
-        encoder = StackLSTM(config.embedding_size, config.encoder_size, config.encoder_num_layers, dropout=0.2)
+        encoder = StackLSTM(config.embedding_size,
+                            config.encoder_size, config.encoder_num_layers,
+                            residual=False, dropout=0.2)
 
         classifiers = nn.ModuleList([
             LabelClassifier(name, field.vocab, config.encoder_size, config.label_size, config.attention_num_heads)
@@ -220,9 +222,9 @@ class Config:
         self.root = './baike/preprocess'
         self.train_file = 'entity.sentence'
 
-        self.embedding_size = 256
-        self.encoder_size = 256
-        self.encoder_num_layers = 2
+        self.embedding_size = 512
+        self.encoder_size = 512
+        self.encoder_num_layers = 4
         self.attention_num_heads = None
 
         self.label_size = 512

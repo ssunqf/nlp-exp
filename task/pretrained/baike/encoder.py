@@ -107,7 +107,7 @@ class LSTMLayer(nn.Module):
 class StackLSTM(nn.Module):
     def __init__(self,
                  input_size: int, hidden_size: int, num_layers: int,
-                 residual=True,
+                 residual=False,
                  recurrent_dropout=0.2, dropout=0.2):
         super(StackLSTM, self).__init__()
         self.input_size = input_size

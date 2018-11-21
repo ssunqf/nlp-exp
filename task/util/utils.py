@@ -8,10 +8,11 @@ from typing import List, Pattern
 hanzi = re.compile(
     u'([^\u0000-\u007f\u00f1\u00e1\u00e9\u00ed\u00f3\u00fa\u00d1\u00c1\u00c9\u00cd\u00d3\u00da\u0410-\u044f\u0406\u0407\u040e\u0456\u0457\u045e])')
 
-phone_number = re.compile(r'(?:(\d{3})?[-. ]?(\d{3})[-. ]?(\d{4}))|' # mmm-mmm-mmmm
-                          r'[1-9]\d{9}|'
-                          r'(\(\d{3}\)(\d{8}|\d{4}-\d{4}))' # (mmm)mmmmmmmm    (mmmm)mmmm-mmmm
-                         )
+phone_number = re.compile(
+    r'(?:(\d{3})?[-. ]?(\d{3})[-. ]?(\d{4}))|' # mmm-mmm-mmmm
+    r'[1-9]\d{9}|'
+    r'(\(\d{3}\)(\d{8}|\d{4}-\d{4}))' # (mmm)mmmmmmmm    (mmmm)mmmm-mmmm
+)
 
 integer = re.compile('(?!=\d)[-+]?(([1-9]{1,3}(,\d{3})*)|([1-9]{1,4}(,\d{4})*))')
 float_template = r'[-+]?(\d+(\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?'
@@ -21,16 +22,17 @@ numeric = re.compile(float_template)
 
 precent = re.compile(float_template + '(%)')
 
-date = re.compile(r'(0?[1-9]|1[012])[-/.](0?[1-9]|[12]\d|3[01])[-/.](1|2)\d\d\d' #mm-dd-yyyy
-                  r'(0?[1-9]|[12]\d|3[01])[-/.](0?[1-9]|1[012])[-/.](1|2)\d\d\d' #dd-mm-yyyy
-                  r'(1|2)\d\d\d([-/.])(0?[1-9]|1[012])\2(0[1-9]|[12]\d|3[01])'  #yyyy-mm-dd
-                  )
+date = re.compile(
+    r'(0?[1-9]|1[012])[-/.](0?[1-9]|[12]\d|3[01])[-/.](1|2)\d\d\d' #mm-dd-yyyy
+    r'(0?[1-9]|[12]\d|3[01])[-/.](0?[1-9]|1[012])[-/.](1|2)\d\d\d' #dd-mm-yyyy
+    r'(1|2)\d\d\d([-/.])(0?[1-9]|1[012])\2(0[1-9]|[12]\d|3[01])'  #yyyy-mm-dd
+)
 
 english = re.compile('[A-Za-z][A-Za-z-.]*')
 numeric_english = re.compile('[0-9A-za-z][0-9A-Za-z.&_=\']+')
 
 email = re.compile(
-    '[a-z0-9!#$%&\'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&\'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?',
+    r'[a-z0-9!#$%&\'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&\'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?',
     re.IGNORECASE)
 
 url = re.compile(
@@ -44,22 +46,22 @@ url = re.compile(
 
 
 units = re.compile(
-    r'(m/s²|°|ʹ|ʹʹ|rad|grad|°'
-    r'|Mm²|km²|m²|cm²|mm²|µm²|nm²|in²|ft²|yd²|mi²|ac|a|m²'
-    r'|g/L|mg/dL|g/L|ppm|s|m|s|C'
+    r'(m/s²|m/s2|°|ʹ|ʹʹ|rad|grad'
+    r'|Mm²|Mm2|km²|km2|m²|m2|cm²|cm2|mm²|mm2|µm²|µm2|nm²|nm2|in²|in2|ft²|ft2|yd²|yd2|mi²|mi2|ac|a'
+    r'|g/L|mg/dL|ppm|s|m|s|C'
     r'|MAh|kAh|Ah|mAh|C|MA|kA|A|mA|A'
-    r'|MV|kV|V|mV|V'
-    r'|MΩ|kΩ|Ω|mΩ|Ω'
-    r'|kJ|J|kCal|cal|J'
-    r'|THz|GHz|MHz|kHz|Hz|mHz|µHz|Hz'
-    r'|L/100km|mpg|L/100km|lx'
-    r'|Mm|km|hm|dam|m|dm|cm|mm|µm|nm|pm|in|ft|yd|mi|smi|ly|NM|ftm|fur|ua|m'
-    r'|kg|g|dg|cg|mg|µg|ng|pg|oz|lb|st|t|ton|ct|oz t|kg'
-    r'|TW|GW|MW|kW|W|mW|µW|nW|nW|nHz|W|N/m²'
-    r'|GPa|MPa|kPa|hPa|inHg|bar|mbar|mmHg|N/m²'
-    r'|m/s|km/h|mph|m/s|K|°C|K'
-    r'|ML|kL|L|dl|cL|mL|km³|m³|dm³|cm³|mm³|in³|ft³|yd³|mi³|af|bsh|tsp|tbsp'
-    r'|fl|cup|pt|qt|gal|tsp|tbsp|fl|pt|qt|gal|dpi)', re.IGNORECASE)
+    r'|MV|kV|V|mV'
+    r'|MΩ|kΩ|Ω|mΩ'
+    r'|kJ|J|kCal|cal'
+    r'|THz|GHz|MHz|kHz|Hz|mHz|µHz'
+    r'|L/100km|mpg|lx'
+    r'|Mm|km|hm|dam|m|dm|cm|mm|µm|nm|pm|in|ft|yd|mi|smi|ly|NM|ftm|fur|ua'
+    r'|kg|g|dg|cg|mg|µg|ng|pg|oz|lb|st|t|ton|ct|oz t'
+    r'|TW|GW|MW|kW|W|mW|µW|nW|nHz|N/m²'
+    r'|GPa|MPa|kPa|hPa|inHg|bar|mbar|mmHg'
+    r'|m/s|km/h|mph|K|°C'
+    r'|ML|kL|L|dl|cL|mL|km³|km3|m³|m3|dm³|dm3|cm³|cm3|mm³|mm3|in³|in3|ft³|ft3|yd³|yd3|mi³|mi3|af|bsh|tsp|tbsp'
+    r'|fl|cup|dpi|kb|mb|gb|tb)', re.IGNORECASE)
 
 numeric_unit = re.compile('%s%s' % (numeric.pattern, units.pattern), re.IGNORECASE)
 
@@ -87,7 +89,7 @@ def split_hanzi(text):
     return hanzi.sub(r' \1 ', text)
 
 
-symbols = re.compile('([()&/~\-:*#$+|{}\[\],;<>?!="^]|)')
+symbols = re.compile('([()&/~\-:*#$+|{}\[\],;<>?!="^]|\.{2,})')
 def replace_entity(text):
     text = split_hanzi(strQ2B(text))
     for word in text.split():

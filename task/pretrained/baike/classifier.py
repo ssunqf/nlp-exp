@@ -121,9 +121,9 @@ class LabelClassifier(nn.Module):
             nn.Sigmoid(),
             nn.Linear(label_size, self.label_size))
 
-        self.loss = SoftmaxLoss(self.voc, label_size)
+        # self.loss = SoftmaxLoss(self.voc, label_size)
         # self.loss = NegativeSampleLoss(self.voc, label_size)
-        # self.loss = AdaptiveLoss(self.voc, label_size)
+        self.loss = AdaptiveLoss(self.voc, label_size)
 
     def forward(self,
                 hidden: torch.Tensor,
@@ -136,7 +136,7 @@ class LabelClassifier(nn.Module):
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    sum += 1 # label.tags.size(0)
+                    sum += 1
                     span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     loss += self.loss(feature, label.tags)

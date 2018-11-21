@@ -25,8 +25,9 @@ class PhraseLabel:
         self.labels = {k: np.array(v, dtype=np.str) for k, v in kwargs.items()}
 
     def to_json(self):
-        return json.dumps({'begin': self.begin, 'end': self.end, 'labels': {k:v.tolist() for k, v in self.labels.items()}},
-                          ensure_ascii=False)
+        return json.dumps(
+            {'begin': self.begin, 'end': self.end, 'labels': {k:v.tolist() for k, v in self.labels.items()}},
+            ensure_ascii=False)
 
     def to_np(self):
         return self.begin, self.end, self.labels['keys'] #, self.labels['attrs'], self.labels['subtitles']
