@@ -148,7 +148,11 @@ class Labeler:
                     self.subtitle_counter.update(subtitles)
                     labels.append(PhraseLabel(begin, end, keys=keys, attrs=attrs, subtitles=subtitles))
 
-        self.text_counter.update(words)
+        print(sentence)
+        print(' '.join(words))
+
+        if len(labels) > 0:
+            self.text_counter.update(words)
         return words, labels
 
     @staticmethod

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import gzip
 from collections import Counter, defaultdict, OrderedDict
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 import torch
 from torch import nn
@@ -27,7 +27,7 @@ class Model(nn.Module):
         self.classifiers = classifiers
 
     def forward(self,
-                data: data.Batch) -> Dict[str, torch.Tensor]:
+                data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
         text, lens = data.text
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
@@ -37,10 +37,10 @@ class Model(nn.Module):
             labels = getattr(data, classifier.name)
             loss = classifier(hidden, masks, labels)
             losses[classifier.name] = loss
-        return losses
+        return losses, lens.size(0)
 
     def predict(self,
-                data: data.Batch) -> Dict[str, List]:
+                data: data.Batch) -> Tuple[Dict[str, List], int]:
         text, lens = data.text
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
@@ -50,7 +50,7 @@ class Model(nn.Module):
             labels = getattr(data, classifier.name)
             res = classifier.predict(hidden, masks, labels)
             results[classifier.name].extend(res)
-        return results
+        return results, lens.size(0)
 
     def _make_masks(self,
                     sens: torch.Tensor,

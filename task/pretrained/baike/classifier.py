@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
 from typing import Tuple, List
+import math
 
 import torch
 from torch import nn
@@ -13,16 +14,24 @@ from .base import Label
 
 
 class NegativeSampleLoss(nn.Module):
-    def __init__(self, voc: Vocab, dim: int, num_samples=20, dropout=0.2):
+    def __init__(self, voc: Vocab, label_size: int, num_samples=20, dropout=0.2):
         super(NegativeSampleLoss, self).__init__()
         self.voc = voc
-        self.dim = dim
+        self.label_size = label_size
         self.num_samples = num_samples
 
         self.dropout = nn.Dropout(dropout)
-        self.h2o = nn.Linear(dim, len(voc))
+        self.h2o = nn.Linear(label_size, len(voc))
 
         self.register_buffer('label_probs', self._sample_probs())
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
+        if self.h2o.bias is not None:
+            stdv = 1. / math.sqrt(self.h2o.bias.size(0))
+            self.h2o.bias.data.uniform_(-stdv, stdv)
 
     def _sample_probs(self):
         freqs = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos]).pow(0.75)
@@ -42,7 +51,7 @@ class NegativeSampleLoss(nn.Module):
 
         out = torch.cat([targets_out, -noise_out], dim=-1)
 
-        loss = -F.logsigmoid(out).mean()
+        loss = -F.logsigmoid(out).sum()
         return loss
 
     def predict(self,
@@ -58,17 +67,25 @@ class NegativeSampleLoss(nn.Module):
 
 
 class SoftmaxLoss(nn.Module):
-    def __init__(self, voc: Vocab, dim: int, dropout=0.2):
+    def __init__(self, voc: Vocab, label_size: int, dropout=0.2):
         super(SoftmaxLoss, self).__init__()
         self.voc = voc
-        self.dim = dim
+        self.label_size = label_size
 
-        self.h2o = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(dim, len(voc)))
+        self.dropout = nn.Dropout(dropout)
+        self.h2o = nn.Linear(label_size, len(voc))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
+        if self.h2o.bias is not None:
+            stdv = 1. / math.sqrt(self.h2o.bias.size(0))
+            self.h2o.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, feature: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return -self.h2o(feature).log_softmax(-1).gather(-1, targets).mean()
+        neg_log_softmax = -self.h2o(feature).log_softmax(-1).gather(-1, targets)
+        return neg_log_softmax
 
     def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.h2o(feature).softmax(-1).topk(topk)
@@ -86,10 +103,13 @@ class AdaptiveLoss(nn.Module):
             cutoffs=self._cutoffs(),
             div_value=2)
 
+        self.loss.reset_parameters()
+
     def forward(self,
                 feature: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
-        return -self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).gather(0, targets).mean()
+        neg_log_softmax = -self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).gather(0, targets)
+        return neg_log_softmax.sum()
 
     def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).topk(topk)
@@ -118,8 +138,7 @@ class LabelClassifier(nn.Module):
         self.hidden2feature = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden_size * 3, self.label_size),
-            nn.Sigmoid(),
-            nn.Linear(label_size, self.label_size))
+            nn.Sigmoid())
 
         # self.loss = SoftmaxLoss(self.voc, label_size)
         # self.loss = NegativeSampleLoss(self.voc, label_size)
@@ -136,7 +155,7 @@ class LabelClassifier(nn.Module):
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    sum += 1
+                    sum += label.tags.size(0)
                     span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     loss += self.loss(feature, label.tags)
@@ -145,17 +164,19 @@ class LabelClassifier(nn.Module):
     def predict(self,
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
-                labels: List[List[Label]]) -> List[Tuple[int, Label, torch.Tensor]]:
+                labels: List[List[Label]]) -> List[List[Tuple[Label, torch.Tensor]]]:
         if self.attention is not None:
             hidden = self.attention(hidden, hidden, hidden, mask)
         results = []
         for bid, sen_labels in enumerate(labels):
+            sen_result = []
             for label in sen_labels:
                 if label.tags.size(0) > 0:
                     span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     scores, indexes = self.loss.predict(feature, 5)
-                    results.append((bid, label, indexes.tolist()))
+                    sen_result.append((label, indexes.tolist()))
+            results.append(sen_result)
 
         return results
 
