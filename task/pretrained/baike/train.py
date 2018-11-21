@@ -141,10 +141,11 @@ class Trainer:
     def train(self):
         total_batch, start = 1e-10, time.time()
         label_losses = collections.defaultdict(float)
-
+        num_iterations = 0
         for train_it, valid_it in tqdm(self.dataset_it, desc='dataset'):
             with tqdm(total=len(train_it.dataset), desc='train') as train_tqdm:
-                for step, batch in enumerate(train_it, start=1):
+                for batch in train_it:
+                    num_iterations += 1
                     losses, batch_size = self.train_one(batch)
                     train_tqdm.update(batch_size)
 
@@ -163,21 +164,26 @@ class Trainer:
                         label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
 
                         self.summary_writer.add_scalars(
-                            'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)}, step)
+                            'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)},
+                            num_iterations)
                         self.summary_writer.add_scalars(
-                            'loss', {('train_%s_loss' % n) : l for n, l in label_losses.items()}, step)
+                            'loss', {('train_%s_loss' % n) : l for n, l in label_losses.items()},
+                            num_iterations)
 
                         self.summary_writer.add_scalars(
-                            'loss', {'valid_mean_loss': total_valid_loss}, step)
+                            'loss', {'valid_mean_loss': total_valid_loss},
+                            num_iterations)
                         self.summary_writer.add_scalars(
-                            'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()}, step)
+                            'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()},
+                            num_iterations)
                         total_batch, start = 1e-10, time.time()
                         label_losses = collections.defaultdict(float)
 
                     if train_it.iterations % (self.valid_step) == 0:
                         for n, scores in self.metrics(valid_it).items():
                             self.summary_writer.add_scalars(
-                                'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()}, step)
+                                'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()},
+                                num_iterations)
 
                 # reset optimizer
                 # if self.train_it.iterations > self.config.warmup_step:
