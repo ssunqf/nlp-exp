@@ -67,6 +67,8 @@ class BaikeDataset(Dataset):
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
 
+                if len(examples) > 100000:
+                    break
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
@@ -79,8 +81,11 @@ class BaikeDataset(Dataset):
             train=train, validation=None, test=test, **kwargs)
 
     @classmethod
-    def iters(cls, fields, batch_size=16, device=torch.device('cpu'), root='.data', vectors=None, **kwargs):
-        train, *left  = cls.splits(fields, root=root, **kwargs)
+    def iters(cls, fields, batch_size=16, device=torch.device('cpu'),
+              root='.data', path=None, train=None,
+              batch_size_fn=None, vectors=None, **kwargs):
+
+        train, *left  = cls.splits(fields, root=root, path=path, train=train, **kwargs)
 
         if len(left) == 0:
             train, valid = train.split(split_ratio=(len(train)-10000)/len(train))
@@ -88,7 +93,9 @@ class BaikeDataset(Dataset):
             valid = left[0]
 
         return data.BucketIterator.splits(
-            [train, valid], batch_size=batch_size, sort_within_batch=True, device=device)
+            [train, valid],
+            batch_size=batch_size, batch_size_fn=batch_size_fn, sort_within_batch=True,
+            device=device, **kwargs)
 
 
 def lazy_iter(fields, data_prefix: str, path=None, lazy=True, repeat=True, **kwargs):

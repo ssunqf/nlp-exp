@@ -5,11 +5,13 @@ import collections
 import os
 import json
 import time
-from typing import Dict
+import random
+from typing import Dict, Tuple
 
 import torch
 from torch import nn, optim
 from tqdm import tqdm
+from torchtext.vocab import Vocab
 
 from .model import Model
 from .data import BaikeDataset, Field, LabelField, lazy_iter
@@ -21,14 +23,16 @@ from tensorboardX import SummaryWriter
 
 class Trainer:
     def __init__(self, config, model: Model,
-                 dataset_it,
+                 dataset_it, text_voc: Vocab, label_vocabs: Dict[str, Vocab],
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.stage = 'pretrain'
         self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
         self.dataset_it = dataset_it
+
+        self.text_voc = text_voc
+        self.label_vocabs = label_vocabs
 
         self.valid_step = valid_step
         self.checkpoint_dir = checkpoint_dir
@@ -39,7 +43,6 @@ class Trainer:
     def state_dict(self, train=True, optimizer=True):
 
         states = collections.OrderedDict()
-        states['stage'] = self.stage
         states['model'] = self.model.state_dict()
         if optimizer:
             states['optimizer'] = self.optimizer.state_dict()
@@ -51,9 +54,8 @@ class Trainer:
     def load_state_dict(self, states, strict):
 
         self.model.load_state_dict(states['model'], strict=strict)
-        if states['stage'] == self.stage:
-            if 'optimizer' in states:
-                self.optimizer.load_state_dict(states['optimizer'])
+        if 'optimizer' in states:
+            self.optimizer.load_state_dict(states['optimizer'])
 
             # if 'train_it' in states:
             #    self.train_it.load_state_dict(states['train_it'])
@@ -62,11 +64,11 @@ class Trainer:
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 
-    def train_one(self, batch, scale):
+    def train_one(self, batch) -> Tuple[Dict[str, float], int]:
         self.model.train()
         self.model.zero_grad()
 
-        losses = self.model(batch)
+        losses, batch_size = self.model(batch)
         rloss = {n: l.item() for n, l in losses.items()}
 
         sum(loss for name, loss in losses.items()).backward()
@@ -75,44 +77,62 @@ class Trainer:
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
         self.optimizer.step()
-        return rloss
+        return rloss, batch_size
 
     def valid(self, valid_it) -> Dict[str, float]:
         self.model.eval()
         with torch.no_grad():
             losses = collections.defaultdict(float)
+            count = 0
+            with tqdm(total=len(valid_it.dataset), desc='valid') as valid_tqdm:
+                for _, valid_batch in enumerate(valid_it):
+                    _losses, batch_size = self.model(valid_batch)
+                    valid_tqdm.update(batch_size)
 
-            for _, valid_batch in tqdm(enumerate(valid_it), total=len(valid_it), desc='valid'):
-                _losses = self.model(valid_batch)
-
-                for n, l in _losses.items():
-                    losses[n] += l.item()
-
-            return {n: l/len(valid_it) for n, l in losses.items()}
+                    for n, l in _losses.items():
+                        losses[n] += l.item()
+                    count += 1
+            return {n: l/count for n, l in losses.items()}
 
     def metrics(self, valid_it):
         self.model.eval()
-        acc, pre, recall = collections.defaultdict(float), \
-                           collections.defaultdict(float), collections.defaultdict(float)
+        acc, pre, recall = [collections.defaultdict(float) for _ in range(3)]
         counter = collections.defaultdict(float)
         with torch.no_grad():
+            with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
+                for _, valid_batch in enumerate(valid_it):
+                    results, batch_size = self.model.predict(valid_batch)
+                    valid_tqdm.update(batch_size)
 
-            for _, valid_batch in tqdm(enumerate(valid_it), total=len(valid_it), desc='metrics'):
-                text, lens = valid_batch.text
-                for name, results in self.model.predict(valid_batch).items():
-                    for bid, label, pred in results:
-                        if label.tags.size(0) > 0:
-                            counter[name] += 1
-                            gold = set(label.tags.tolist())
-                            pred = set(pred)
-                            inter = gold.intersection(pred)
-                            union = gold.union(pred)
-                            acc[name] += len(inter) / len(union)
-                            pre[name] += len(inter) / len(pred)
-                            recall[name] += len(inter) / len(gold)
+                    for name, result in results.items():
+                        for sen_res in result:
+                            for label, pred in sen_res:
+                                if label.tags.size(0) > 0:
+                                    counter[name] += 1
+                                    gold = set(label.tags.tolist())
+                                    pred = set(pred)
+                                    inter = gold.intersection(pred)
+                                    union = gold.union(pred)
+                                    acc[name] += len(inter) / len(union)
+                                    pre[name] += len(inter) / len(pred)
+                                    recall[name] += len(inter) / len(gold)
 
-                            # if random.random() < 0.02:
-                            #    print('text: %s' % (for w in text[:lens[bid]]))
+                    def pretty_print(batch, results):
+                        text, lens = valid_batch.text
+
+                        for bid in range(lens.size(0)):
+                            text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
+                            print()
+                            print(text_str)
+                            for name, result in results.items():
+                                for label, pred in result[bid]:
+                                    gold = set(self.label_vocabs[name].itos[i] for i in label.tags.tolist())
+                                    pred = set(self.label_vocabs[name].itos[i] for i in pred)
+                                    print('(%d,%d,%s): (%s, %s, %s)' % (
+                                        label.begin, label.end, ''.join(text_str[label.begin:label.end]), name, gold, pred))
+
+                    if random.random() < 0.005:
+                        pretty_print(valid_batch, results)
 
             scores = {n: {'acc': acc[n]/c, 'pre': pre[n]/c, 'recall': recall[n]/c} for n, c in counter.items()}
 
@@ -123,44 +143,45 @@ class Trainer:
         label_losses = collections.defaultdict(float)
 
         for train_it, valid_it in tqdm(self.dataset_it, desc='dataset'):
-            for step, batch in tqdm(enumerate(train_it, start=1),
-                                    total=len(train_it), desc='train'):
+            with tqdm(total=len(train_it.dataset), desc='train') as train_tqdm:
+                for step, batch in enumerate(train_it, start=1):
+                    losses, batch_size = self.train_one(batch)
+                    train_tqdm.update(batch_size)
 
-                losses = self.train_one(batch, scale=1.0)
+                    for n, l in losses.items():
+                        label_losses[n] += l
 
-                for n, l in losses.items():
-                    label_losses[n] += l
                     total_batch += 1
 
-                if step % self.valid_step == 0:
+                    if step % self.valid_step == 0:
 
-                    valid_losses = self.valid(valid_it)
-                    total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
+                        valid_losses = self.valid(valid_it)
+                        total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
 
-                    self.checkpoint(total_valid_loss)
+                        self.checkpoint(total_valid_loss)
 
-                    label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
+                        label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
 
-                    self.summary_writer.add_scalars(
-                        'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)}, step)
-                    self.summary_writer.add_scalars(
-                        'loss', {('train_%s_loss' % n) : l for n, l in label_losses.items()}, step)
-
-                    self.summary_writer.add_scalars(
-                        'loss', {'valid_mean_loss': total_valid_loss}, step)
-                    self.summary_writer.add_scalars(
-                        'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()}, step)
-                    total_batch, start = 1e-10, time.time()
-                    label_losses = collections.defaultdict(float)
-
-                if train_it.iterations % (self.valid_step) == 0:
-                    for n, scores in self.metrics(valid_it).items():
                         self.summary_writer.add_scalars(
-                            'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()}, step)
+                            'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)}, step)
+                        self.summary_writer.add_scalars(
+                            'loss', {('train_%s_loss' % n) : l for n, l in label_losses.items()}, step)
 
-            # reset optimizer
-            # if self.train_it.iterations > self.config.warmup_step:
-            #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
+                        self.summary_writer.add_scalars(
+                            'loss', {'valid_mean_loss': total_valid_loss}, step)
+                        self.summary_writer.add_scalars(
+                            'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()}, step)
+                        total_batch, start = 1e-10, time.time()
+                        label_losses = collections.defaultdict(float)
+
+                    if train_it.iterations % (self.valid_step) == 0:
+                        for n, scores in self.metrics(valid_it).items():
+                            self.summary_writer.add_scalars(
+                                'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()}, step)
+
+                # reset optimizer
+                # if self.train_it.iterations > self.config.warmup_step:
+                #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
     def checkpoint(self, valid_loss):
         torch.save(self.state_dict(), '%s/pretrained-last' % (self.checkpoint_dir))
@@ -174,9 +195,8 @@ class Trainer:
             loss, file = self.checkpoint_files.popleft()
             os.remove(file)
 
-    @staticmethod
-    def create(config):
-
+    @classmethod
+    def load_voc(cls, config):
         TEXT = Field(include_lengths=True, init_token='<s>', eos_token='</s>')
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
@@ -191,16 +211,27 @@ class Trainer:
         print('attr vocab size = %d' % len(ATTR_LABEL.vocab))
         print('subtitle vocab size = %d' % len(SUB_LABEL.vocab))
 
-        fields = [('text', TEXT), (('keys', 'attrs', 'subtitles'), (KEY_LABEL, ATTR_LABEL, SUB_LABEL))]
+        return TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL
 
+    @classmethod
+    def load_dataset(cls, config, fields):
         # train_it, valid_it = BaikeDataset.iters(
         #    fields, path=config.root, train=config.train_file, device=config.device)
         # train_it.repeat = True
+        def batch_size_fn(new, count, sofar):
+            return sofar + (len(new.text) + 99)//100
 
-        dataset_it = lazy_iter(fields, config.train_file, path=config.root, device=config.device)
+        dataset_it = lazy_iter(fields, config.train_file,
+                               batch_size=config.batch_size,
+                               path=config.root,
+                               batch_size_fn=batch_size_fn,
+                               device=config.device)
+        return dataset_it
 
-        text_voc = TEXT.vocab
-        embedding = nn.Embedding(len(text_voc), config.embedding_size)
+    @classmethod
+    def load_model(cls, config, text_field, key_field, attr_field, sub_field):
+
+        embedding = nn.Embedding(len(text_field.vocab), config.embedding_size)
 
         encoder = StackLSTM(config.embedding_size,
                             config.encoder_size, config.encoder_num_layers,
@@ -208,13 +239,33 @@ class Trainer:
 
         classifiers = nn.ModuleList([
             LabelClassifier(name, field.vocab, config.encoder_size, config.label_size, config.attention_num_heads)
-            for name, field in [('keys', KEY_LABEL), ('attrs', ATTR_LABEL), ('subtitles', SUB_LABEL)]])
+            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field)]])
 
         model = Model(embedding, encoder, classifiers)
 
         model.to(config.device)
 
-        return Trainer(config, model, dataset_it, config.valid_step, config.checkpoint_dir)
+        return model
+
+    @classmethod
+    def create(cls, config, checkpoint=None):
+        TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL = cls.load_voc(config)
+
+        fields = [('text', TEXT), (('keys', 'attrs', 'subtitles'), (KEY_LABEL, ATTR_LABEL, SUB_LABEL))]
+
+        # train_it, valid_it = BaikeDataset.iters(
+        #    fields, path=config.root, train=config.train_file, device=config.device)
+        # train_it.repeat = True
+
+        dataset_it = cls.load_dataset(config, fields)
+
+        model = cls.load_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL)
+        trainer = cls(config, model, dataset_it,
+            TEXT.vocab, {'keys': KEY_LABEL.vocab, 'attrs': ATTR_LABEL.vocab, 'subtitles': SUB_LABEL.vocab},
+            config.valid_step, config.checkpoint_dir)
+        if checkpoint:
+            trainer.load_checkpoint(checkpoint)
+        return trainer
 
 
 class Config:
@@ -223,14 +274,16 @@ class Config:
         self.train_file = 'entity.sentence'
 
         self.embedding_size = 256
-        self.encoder_size = 256
+        self.encoder_size = 512
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 
-        self.label_size = 256
+        self.label_size = 512
 
         self.valid_step = 500
         self.warmup_step = 5000
+
+        self.batch_size = 32
 
         self.dir_prefix = 'softmax-sum-res'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')

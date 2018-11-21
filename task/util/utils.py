@@ -61,7 +61,7 @@ units = re.compile(
     r'|GPa|MPa|kPa|hPa|inHg|bar|mbar|mmHg'
     r'|m/s|km/h|mph|K|°C'
     r'|ML|kL|L|dl|cL|mL|km³|km3|m³|m3|dm³|dm3|cm³|cm3|mm³|mm3|in³|in3|ft³|ft3|yd³|yd3|mi³|mi3|af|bsh|tsp|tbsp'
-    r'|fl|cup|dpi|kb|mb|gb|tb)', re.IGNORECASE)
+    r'|fl|cup|dpi|kb|mb|gb|tb|AU)', re.IGNORECASE)
 
 numeric_unit = re.compile('%s%s' % (numeric.pattern, units.pattern), re.IGNORECASE)
 
@@ -77,6 +77,7 @@ def strQ2B(ustring):
         inside_code = ord(uchar)
         if inside_code == 12288:  # 全角空格直接转换
             inside_code = 32
+            rstring += chr(inside_code)
         elif (inside_code >= 65281 and inside_code <= 65374 and inside_code != 65292):  # 全角字符（除空格,逗号）根据关系转化
             inside_code -= 65248
             rstring += chr(inside_code)
@@ -89,7 +90,9 @@ def split_hanzi(text):
     return hanzi.sub(r' \1 ', text)
 
 
-symbols = re.compile('([()&/~\-:*#$+|{}\[\],;<>?!="^]|\.{2,})')
+symbols = re.compile('([()&/~\-:*#$+|{}\[\],;<>?!="^]+|\.{2,})')
+
+
 def replace_entity(text):
     text = split_hanzi(strQ2B(text))
     for word in text.split():
@@ -115,8 +118,9 @@ def replace_word(word, split_word=True):
         yield ('@numeric@', word)
     elif numeric_unit.fullmatch(word):
         matched = numeric.match(word)
-        yield ('@numeric@', word[matched.pos:matched.endpos])
-        yield ('@unit@', word[matched.endpos:])
+        m_begin, m_end = matched.span(0)
+        yield ('@numeric@', word[m_begin:m_end])
+        yield ('@unit@', word[m_end:])
     elif word[-1] in 'NSEW' and coordinate.fullmatch(word[:-1]):
         yield ('@coordinate@', word[:-1])
         yield ('@eng_word@', word[-1])
