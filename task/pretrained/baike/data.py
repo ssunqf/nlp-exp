@@ -67,8 +67,6 @@ class BaikeDataset(Dataset):
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
 
-                if len(examples) > 100000:
-                    break
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod

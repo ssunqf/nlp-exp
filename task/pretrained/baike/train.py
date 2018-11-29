@@ -154,7 +154,7 @@ class Trainer:
 
                     total_batch += 1
 
-                    if step % self.valid_step == 0:
+                    if num_iterations % self.valid_step == 0:
 
                         valid_losses = self.valid(valid_it)
                         total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
@@ -207,10 +207,10 @@ class Trainer:
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
-        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), min_freq=100)
-        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), min_freq=100)
-        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), min_freq=100)
-        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), min_freq=100)
+        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), max_size=50000, min_freq=50)
+        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), min_freq=50)
+        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), min_freq=50)
+        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), min_freq=50)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
@@ -244,7 +244,7 @@ class Trainer:
                             residual=False, dropout=0.2)
 
         classifiers = nn.ModuleList([
-            LabelClassifier(name, field.vocab, config.encoder_size, config.label_size, config.attention_num_heads)
+            LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size, config.attention_num_heads)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field)]])
 
         model = Model(embedding, encoder, classifiers)
@@ -276,13 +276,13 @@ class Trainer:
 
 class Config:
     def __init__(self):
-        self.root = './baike/preprocess'
-        self.train_file = 'entity.sentence'
+        self.root = './baike/preprocess3'
+        self.train_file = 'sentence.url'
 
         self.embedding_size = 256
         self.encoder_size = 512
         self.encoder_num_layers = 2
-        self.attention_num_heads = None
+        self.attention_num_heads = 8
 
         self.label_size = 512
 
@@ -291,14 +291,14 @@ class Config:
 
         self.batch_size = 32
 
-        self.dir_prefix = 'softmax-sum-res'
+        self.dir_prefix = 'subsample-sum-res'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         self.summary_dir = os.path.join(self.root, self.dir_prefix, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.classifier_type = 'softmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
+        self.classifier_loss = 'adaptivesoftmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
