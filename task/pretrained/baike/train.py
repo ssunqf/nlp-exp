@@ -16,7 +16,7 @@ from torchtext.vocab import Vocab
 from .model import Model
 from .data import BaikeDataset, Field, LabelField, lazy_iter
 from .encoder import LSTMEncoder, StackLSTM
-from .classifier import LabelClassifier
+from .classifier import LabelClassifier, PhraseClassifier
 
 from tensorboardX import SummaryWriter
 
@@ -27,7 +27,7 @@ class Trainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
+        self.optimizer = optim.Adam(self.model.parameters(), 1e-2, weight_decay=1e-3)
 
         self.dataset_it = dataset_it
 
@@ -71,7 +71,11 @@ class Trainer:
         losses, batch_size = self.model(batch)
         rloss = {n: l.item() for n, l in losses.items()}
 
-        sum(loss for name, loss in losses.items()).backward()
+        loss = sum(loss for name, loss in losses.items())
+
+        if loss.requires_grad is False:
+            return loss, batch_size
+        loss.backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
@@ -98,10 +102,12 @@ class Trainer:
         self.model.eval()
         acc, pre, recall = [collections.defaultdict(float) for _ in range(3)]
         counter = collections.defaultdict(float)
+
+        phrase_correct, phrase_total = 0, 0
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
-                    results, batch_size = self.model.predict(valid_batch)
+                    results, phrases, batch_size = self.model.predict(valid_batch)
                     valid_tqdm.update(batch_size)
 
                     for name, result in results.items():
@@ -117,26 +123,65 @@ class Trainer:
                                     pre[name] += len(inter) / len(pred)
                                     recall[name] += len(inter) / len(gold)
 
-                    def pretty_print(batch, results):
-                        text, lens = valid_batch.text
+                    for sps in phrases:
+                        for _, _, gold, pred in sps:
+                            gold, pred = gold > 0.5, pred > 0.5
+                            if gold == pred:
+                                phrase_correct += 1
+                            phrase_total += 1
 
+                    def pretty_print(batch, label_results, phrases, find_phrases=None):
+                        text, lens = batch.text
                         for bid in range(lens.size(0)):
                             text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
                             print()
                             print(text_str)
-                            for name, result in results.items():
+                            for name, result in label_results.items():
                                 for label, pred in result[bid]:
                                     gold = set(self.label_vocabs[name].itos[i] for i in label.tags.tolist())
                                     pred = set(self.label_vocabs[name].itos[i] for i in pred)
                                     print('(%d,%d,%s): (%s, %s, %s)' % (
-                                        label.begin, label.end, ''.join(text_str[label.begin:label.end]), name, gold, pred))
+                                        label.begin, label.end,
+                                        ''.join(text_str[label.begin:label.end]), name, gold, pred))
+
+                            for begin, end, gold, pred in phrases[bid]:
+                                print('(%d,%d,%s): (%f, %f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred))
+
+                            if find_phrases:
+                                print()
+                                for begin, end, prob in find_phrases[bid]:
+                                    print('(%d,%d,%s): prob=%f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
                     if random.random() < 0.005:
-                        pretty_print(valid_batch, results)
+                        find_phrases = self.model.list_phrase(valid_batch)
+                        self.pretty_print(valid_batch, results, phrases, find_phrases)
 
             scores = {n: {'acc': acc[n]/c, 'pre': pre[n]/c, 'recall': recall[n]/c} for n, c in counter.items()}
-
+            scores['phrase'] = {'pre': phrase_correct/phrase_total}
+            print(scores)
             return scores
+
+    def pretty_print(self, batch, label_results, phrases, find_phrases=None):
+        text, lens = batch.text
+        for bid in range(lens.size(0)):
+            text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
+            print()
+            print(text_str)
+            for name, result in label_results.items():
+                for label, pred in result[bid]:
+                    gold = set(self.label_vocabs[name].itos[i] for i in label.tags.tolist())
+                    pred = set(self.label_vocabs[name].itos[i] for i in pred)
+                    print('(%d,%d,%s): (%s, %s, %s)' % (
+                        label.begin, label.end,
+                        ''.join(text_str[label.begin:label.end]), name, gold, pred))
+
+            for begin, end, gold, pred in phrases[bid]:
+                print('(%d,%d,%s): (%f, %f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred))
+
+            if find_phrases:
+                print()
+                for begin, end, prob in find_phrases[bid]:
+                    print('(%d,%d,%s): prob=%f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
     def train(self):
         total_batch, start = 1e-10, time.time()
@@ -243,11 +288,11 @@ class Trainer:
                             config.encoder_size, config.encoder_num_layers,
                             residual=False, dropout=0.2)
 
-        classifiers = nn.ModuleList([
+        label_classifiers = nn.ModuleList([
             LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size, config.attention_num_heads)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field)]])
-
-        model = Model(embedding, encoder, classifiers)
+        phrase_classifier = PhraseClassifier(config.encoder_size)
+        model = Model(embedding, encoder, label_classifiers, phrase_classifier)
 
         model.to(config.device)
 
@@ -276,20 +321,20 @@ class Trainer:
 
 class Config:
     def __init__(self):
-        self.root = './baike/preprocess3'
-        self.train_file = 'sentence.url'
+        self.root = './baike/preprocess'
+        self.train_file = 'entity.sentence'
 
         self.embedding_size = 256
-        self.encoder_size = 512
+        self.encoder_size = 256
         self.encoder_num_layers = 2
         self.attention_num_heads = 8
 
-        self.label_size = 512
+        self.label_size = 256
 
-        self.valid_step = 500
+        self.valid_step = 50
         self.warmup_step = 5000
 
-        self.batch_size = 32
+        self.batch_size = 16
 
         self.dir_prefix = 'subsample-sum-res'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')
@@ -298,7 +343,7 @@ class Config:
         self.summary_dir = os.path.join(self.root, self.dir_prefix, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.classifier_loss = 'adaptivesoftmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
+        self.classifier_loss = 'softmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
