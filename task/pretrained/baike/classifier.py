@@ -14,34 +14,34 @@ from .base import Label
 
 
 class NegativeSampleLoss(nn.Module):
-    def __init__(self, voc: Vocab, label_size: int, num_samples=20, dropout=0.2):
+    def __init__(self, voc: Vocab, label_size: int, sample_ratio=2, dropout=0.2):
         super(NegativeSampleLoss, self).__init__()
         self.voc = voc
         self.label_size = label_size
-        self.num_samples = num_samples
+        self.sample_ratio = sample_ratio
 
         self.dropout = nn.Dropout(dropout)
-        self.h2o = nn.Linear(label_size, len(voc))
+        self.h2o = nn.Linear(label_size, len(voc), bias=False)
 
-        self.register_buffer('label_probs', self._sample_probs())
+        self.register_buffer('negative_sample_probs', self._negative_sample_probs())
 
         self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
-        if self.h2o.bias is not None:
-            stdv = 1. / math.sqrt(self.h2o.bias.size(0))
-            self.h2o.bias.data.uniform_(-stdv, stdv)
 
-    def _sample_probs(self):
+    def _negative_sample_probs(self):
         freqs = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos]).pow(0.75)
         return freqs / freqs.sum()
+
+        # freqs = 1 - (10e-5/torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])).sqrt()
+        # return freqs
 
     def forward(self,
                 feature: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
-        probs = self.label_probs.index_fill_(0, targets, 0)
-        noises = torch.multinomial(probs, self.num_samples)
+        probs = self.negative_sample_probs.index_fill_(0, targets, 0)
+        noises = torch.multinomial(probs, self.sample_ratio * targets.size(0))
 
         feature = self.dropout(feature)
 
@@ -51,7 +51,7 @@ class NegativeSampleLoss(nn.Module):
 
         out = torch.cat([targets_out, -noise_out], dim=-1)
 
-        loss = -F.logsigmoid(out).sum()
+        loss = -F.logsigmoid(out).mean()
         return loss
 
     def predict(self,
@@ -62,37 +62,46 @@ class NegativeSampleLoss(nn.Module):
 
     def _output(self, input, indices: torch.LongTensor):
         weight = self.h2o.weight.index_select(0, indices)
-        bias = self.h2o.bias.index_select(0, indices) if self.h2o.bias is not None else None
-        return F.linear(input, weight, bias)
+        return F.linear(input, weight)
 
 
 class SoftmaxLoss(nn.Module):
-    def __init__(self, voc: Vocab, label_size: int, dropout=0.2):
+    def __init__(self, voc: Vocab, label_size: int, dropout=0.3):
         super(SoftmaxLoss, self).__init__()
         self.voc = voc
         self.label_size = label_size
 
         self.dropout = nn.Dropout(dropout)
-        self.h2o = nn.Linear(label_size, len(voc))
+        self.h2o = nn.Linear(label_size, len(voc), bias=True)
+
+        self.register_buffer('discard_probs', self._discard_probs())
 
         self.reset_parameters()
 
+    # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
+    def _discard_probs(self):
+        counts = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])
+        freqs = counts / counts.sum()
+        discard_probs = 1 - (10e-5/freqs).sqrt()
+        discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
+        return discard_probs
+
     def reset_parameters(self):
         nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
-        if self.h2o.bias is not None:
-            stdv = 1. / math.sqrt(self.h2o.bias.size(0))
-            self.h2o.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, feature: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        feature = self.dropout(feature)
         neg_log_softmax = -self.h2o(feature).log_softmax(-1).gather(-1, targets)
-        return neg_log_softmax
+        scaled_ratio = 1 - self.discard_probs.gather(0, targets)
+        return (neg_log_softmax * scaled_ratio).sum()
+        # return neg_log_softmax.sum()
 
     def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.h2o(feature).softmax(-1).topk(topk)
 
 
 class AdaptiveLoss(nn.Module):
-    def __init__(self, vocab: Vocab, label_size: int, dropout=0.2):
+    def __init__(self, vocab: Vocab, label_size: int, dropout=0.3):
         super(AdaptiveLoss, self).__init__()
         self.vocab = vocab
         self.label_size = label_size
@@ -103,13 +112,26 @@ class AdaptiveLoss(nn.Module):
             cutoffs=self._cutoffs(),
             div_value=2)
 
+        self.register_buffer('discard_probs', self._discard_probs())
+
         self.loss.reset_parameters()
+
+    # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
+    def _discard_probs(self):
+        counts = torch.FloatTensor([self.vocab.freqs.get(s, 1e-5) for s in self.vocab.itos])
+        freqs = counts / counts.sum()
+        discard_probs = 1 - (10e-5/freqs).sqrt()
+        discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
+        return discard_probs
 
     def forward(self,
                 feature: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
+        feature = self.dropout(feature)
         neg_log_softmax = -self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).gather(0, targets)
-        return neg_log_softmax.sum()
+        scaled_ratio = 1 - self.discard_probs.gather(0, targets)
+        return (neg_log_softmax * scaled_ratio).sum()
+        # return neg_log_softmax.sum()
 
     def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).topk(topk)
@@ -126,7 +148,14 @@ class AdaptiveLoss(nn.Module):
 
 
 class LabelClassifier(nn.Module):
-    def __init__(self, name, voc, hidden_size, label_size, attention_num_heads, dropout=0.2):
+    loss_dict = {
+        'softmax': SoftmaxLoss,
+        'negativesample': NegativeSampleLoss,
+        'adaptivesoftmax': AdaptiveLoss
+    }
+
+    def __init__(self, name: str, loss_type: str, voc: Vocab,
+                 hidden_size, label_size, attention_num_heads=None, dropout=0.2):
         super(LabelClassifier, self).__init__()
         self.name = name
         self.voc = voc
@@ -137,12 +166,13 @@ class LabelClassifier(nn.Module):
             else MultiHeadedAttention(attention_num_heads, hidden_size)
         self.hidden2feature = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * 3, self.label_size),
+            nn.Linear(hidden_size * 2, self.label_size),
             nn.Sigmoid())
+            # nn.Linear(self.label_size, self.label_size))
 
-        # self.loss = SoftmaxLoss(self.voc, label_size)
-        # self.loss = NegativeSampleLoss(self.voc, label_size)
-        self.loss = AdaptiveLoss(self.voc, label_size)
+        assert loss_type.lower() in self.loss_dict
+
+        self.loss = self.loss_dict[loss_type.lower()](self.voc, self.label_size)
 
     def forward(self,
                 hidden: torch.Tensor,
@@ -181,5 +211,7 @@ class LabelClassifier(nn.Module):
         return results
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
-        mean = hidden[begin:end, bid].mean(dim=0)
-        return torch.cat([hidden[begin - 1, bid], mean, hidden[end, bid]], dim=-1)
+        # mean = hidden[begin:end, bid].mean(0)
+        # return torch.cat([hidden[begin-1, bid], mean, hidden[end, bid]], dim=-1)
+        # return torch.cat([hidden[begin-1:begin+1, bid], hidden[end-1:end+1, bid]], dim=0).view(-1)
+        return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
