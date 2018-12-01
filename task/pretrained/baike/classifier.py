@@ -209,9 +209,8 @@ class LabelClassifier(nn.Module):
 
         return results
 
-    def _span_embed(self, left: torch.Tensor, right: torch.Tensor, bid: int, begin: int, end: int):
-        return left[begin, bid] + right[end - 1, bid]
-
+    def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
+        return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
 
 class PhraseClassifier(nn.Module):
     def __init__(self, hidden_size, max_length=10, dropout=0.3):
@@ -295,4 +294,4 @@ class PhraseClassifier(nn.Module):
         return samples, features, targets
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
-        return torch.cat([hidden[begin-1:begin+1, bid], hidden[end-1:end+1, bid]], dim=0).view(-1)
+        return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
