@@ -336,7 +336,7 @@ class Config:
 
         self.batch_size = 16
 
-        self.dir_prefix = 'subsample-sum-res'
+        self.dir_prefix = 'subsample-sum-phrase'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
