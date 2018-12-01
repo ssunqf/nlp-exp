@@ -10,11 +10,20 @@ counts = defaultdict(int)
 
 
 def preprocess(para: str):
+<<<<<<< HEAD
+    for sen in splitter(para):
+        words = [term.word for term in HanLP.segment(sen)]
+        for w in words:
+            counts[w] += 1
+        if len(words) > 5:
+            yield ' '.join(words)
+=======
     for sen in splitter.split_sentence(para):
         words = [term.word for term in HanLP.segment(sen)]
         for w in words:
             counts[w] += 1
         yield ' '.join(words)
+>>>>>>> f5963192400b0095b40e1a0f9f9ffdf93487fa6b
 
 
 if __name__ == '__main__':

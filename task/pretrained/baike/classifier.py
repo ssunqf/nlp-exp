@@ -91,6 +91,7 @@ class SoftmaxLoss(nn.Module):
         nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
 
     def forward(self, feature: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        feature = self.dropout(feature)
         neg_log_softmax = -self.h2o(feature).log_softmax(0).gather(0, targets)
         scaled_ratio = 1 - self.discard_probs.gather(0, targets)
         return (neg_log_softmax * scaled_ratio).sum()
@@ -121,12 +122,12 @@ class AdaptiveLoss(nn.Module):
         freqs = counts / counts.sum()
         discard_probs = 1 - (10e-5/freqs).sqrt()
         discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
-        print(discard_probs)
         return discard_probs
 
     def forward(self,
                 feature: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
+        feature = self.dropout(feature)
         neg_log_softmax = -self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).gather(0, targets)
         scaled_ratio = 1 - self.discard_probs.gather(0, targets)
         return (neg_log_softmax * scaled_ratio).sum()
@@ -137,7 +138,7 @@ class AdaptiveLoss(nn.Module):
     def _cutoffs(self):
         voc_len = len(self.vocab)
         size = self.label_size
-        cutoffs = [voc_len//5]
+        cutoffs = [voc_len//10]
         while cutoffs[-1]*2 < voc_len and size//2 > 50:
             cutoffs.append(cutoffs[-1] * 2)
             size //= 2
@@ -178,15 +179,13 @@ class LabelClassifier(nn.Module):
                 labels: List[List[Label]]) -> torch.Tensor:
         if self.attention is not None:
             hidden = self.attention(hidden, hidden, hidden, mask)
-        left_h = self.left(hidden)
-        right_h = self.right(hidden)
         loss = torch.zeros(1, device=hidden.device)
         sum = 0
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
                     sum += label.tags.size(0)
-                    span_emb = self._span_embed(left_h, right_h, bid, label.begin, label.end)
+                    span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     loss += self.loss(feature, label.tags)
         return loss / (sum + 1e-5)
@@ -197,14 +196,12 @@ class LabelClassifier(nn.Module):
                 labels: List[List[Label]]) -> List[List[Tuple[Label, torch.Tensor]]]:
         if self.attention is not None:
             hidden = self.attention(hidden, hidden, hidden, mask)
-        left_h = self.left(self.dropout(hidden))
-        right_h = self.right(self.dropout(hidden))
         results = []
         for bid, sen_labels in enumerate(labels):
             sen_result = []
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    span_emb = self._span_embed(left_h, right_h, bid, label.begin, label.end)
+                    span_emb = self._span_embed(hidden, bid, label.begin, label.end)
                     feature = self.hidden2feature(span_emb)
                     scores, indexes = self.loss.predict(feature, 5)
                     sen_result.append((label, indexes.tolist()))
@@ -298,5 +295,4 @@ class PhraseClassifier(nn.Module):
         return samples, features, targets
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
-        return torch.cat([hidden[begin, bid],
-                          hidden[end - 1, bid]], dim=-1)
+        return torch.cat([hidden[begin-1:begin+1, bid], hidden[end-1:end+1, bid]], dim=0).view(-1)

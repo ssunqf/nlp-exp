@@ -173,7 +173,7 @@ if __name__ == '__main__':
     if config.use_cuda:
         model = model.cuda()
 
-    weight_decays=[0.000004, 0.000003, 0.000002, 0.000001]
+    weight_decays=[0.00004, 0.00003, 0.00002, 0.00001]
     for i in weight_decays:
         train(model, train_data, valid_data, test_data, label2id, max_epoch=30, weight_decay=i)
 

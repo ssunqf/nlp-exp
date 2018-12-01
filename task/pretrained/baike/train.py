@@ -27,7 +27,7 @@ class Trainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), 1e-2, weight_decay=1e-3)
+        self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
         self.dataset_it = dataset_it
 
@@ -72,9 +72,9 @@ class Trainer:
         rloss = {n: l.item() for n, l in losses.items()}
 
         loss = sum(loss for name, loss in losses.items())
-
         if loss.requires_grad is False:
-            return loss, batch_size
+            return rloss, batch_size
+
         loss.backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
@@ -252,10 +252,10 @@ class Trainer:
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
-        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), max_size=50000, min_freq=50)
-        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), min_freq=50)
-        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), min_freq=50)
-        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), min_freq=50)
+        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), max_size=50000, min_freq=100)
+        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), max_size=100000, min_freq=100)
+        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), max_size=100000, min_freq=100)
+        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), max_size=100000, min_freq=100)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
@@ -321,17 +321,17 @@ class Trainer:
 
 class Config:
     def __init__(self):
-        self.root = './baike/preprocess'
-        self.train_file = 'entity.sentence'
+        self.root = './baike/preprocess3'
+        self.train_file = 'sentence.url'
 
         self.embedding_size = 256
-        self.encoder_size = 256
+        self.encoder_size = 512
         self.encoder_num_layers = 2
-        self.attention_num_heads = 8
+        self.attention_num_heads = None
 
         self.label_size = 256
 
-        self.valid_step = 50
+        self.valid_step = 500
         self.warmup_step = 5000
 
         self.batch_size = 16
