@@ -81,7 +81,7 @@ class SoftmaxLoss(nn.Module):
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
-        counts = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])
+        counts = torch.tensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])
         freqs = counts / counts.sum()
         discard_probs = 1 - (10e-5/freqs).sqrt()
         discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
@@ -118,7 +118,7 @@ class AdaptiveLoss(nn.Module):
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
-        counts = torch.FloatTensor([self.vocab.freqs.get(s, 1e-5) for s in self.vocab.itos])
+        counts = torch.tensor([self.vocab.freqs.get(s, 1e-5) for s in self.vocab.itos])
         freqs = counts / counts.sum()
         discard_probs = 1 - (10e-5/freqs).sqrt()
         discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
@@ -166,7 +166,8 @@ class LabelClassifier(nn.Module):
         self.hidden2feature = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden_size * 2, self.label_size),
-            nn.Tanh()
+            nn.Sigmoid(),
+            nn.Linear(self.label_size, self.label_size)
         )
 
         assert loss_type.lower() in self.loss_dict
@@ -209,11 +210,15 @@ class LabelClassifier(nn.Module):
 
         return results
 
+    def named_embeddings(self):
+        yield self.name, self.loss.h2o.weight, self.loss.voc.itos
+
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
         return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
 
+
 class PhraseClassifier(nn.Module):
-    def __init__(self, hidden_size, max_length=10, dropout=0.3):
+    def __init__(self, hidden_size, max_length=15, dropout=0.3):
         super(PhraseClassifier, self).__init__()
 
         self.hidden_size = hidden_size
@@ -229,8 +234,13 @@ class PhraseClassifier(nn.Module):
                 mask: torch.Tensor,
                 phrases: List[Tuple[int, int, int]]) -> torch.Tensor:
         samples, features, targets = self._make_sample(hidden, mask, phrases)
-        pos_weight = targets.size(0) / targets.sum() - 1
-        weights = torch.full(targets.size(), 1, device=hidden.device).masked_fill_(targets > 0.5, pos_weight)
+        if len(samples) == 0:
+            return torch.tensor([0.0], device=hidden.device)
+
+        pos_weight = (targets.size(0) - targets.sum().item()) / targets.size(0)
+        weights = torch.full(targets.size(),
+                             1 - pos_weight,
+                             device=hidden.device).masked_fill_(targets > 0.5, pos_weight)
         loss = F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1), reduction='none')
         return torch.mean(loss.squeeze() * weights)
 
@@ -240,6 +250,9 @@ class PhraseClassifier(nn.Module):
                 phrases: List[List[Tuple[int, int]]]) -> List[List[Tuple[int, int, float, float]]]:
 
         samples, features, targets = self._make_sample(hidden, mask, phrases)
+        if len(samples) == 0:
+            return [[] for _ in range(len(phrases))]
+
         preds = self.ffn(features)
 
         targets = targets.tolist()
@@ -287,10 +300,14 @@ class PhraseClassifier(nn.Module):
                             right = random.randint(end+1, min(lens[bid], end+self.max_length))
                             samples.append((bid, mid, right))
                             targets.append(0)
+        if len(samples) > 0:
+            features = torch.stack([self._span_embed(hidden, bid, begin, end)
+                                    for bid, begin, end in samples], dim=0)
+            targets = torch.tensor(targets, dtype=torch.float, device=hidden.device)
+        else:
+            features = torch.tensor([], device=hidden.device)
+            targets = torch.tensor([], device=hidden.device)
 
-        features = torch.stack([self._span_embed(hidden, bid, begin, end)
-                               for bid, begin, end in samples], dim=0)
-        targets = torch.FloatTensor(targets, device=hidden.device)
         return samples, features, targets
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):

@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torchtext import data
 from torchtext.data import Dataset
+from torchtext.vocab import Vocab
 from tqdm import tqdm
 
 from .base import Label
@@ -18,16 +19,18 @@ from .preprocess import PhraseLabel
 
 class Model(nn.Module):
     def __init__(self,
+                 text_voc: Vocab,
                  embedding: nn.Embedding,
                  encoder: LSTMEncoder,
                  label_classifiers: nn.ModuleList,
                  phrase_classifier: PhraseClassifier):
         super(Model, self).__init__()
+
+        self.text_voc = text_voc
         self.embedding = embedding
         self.encoder = encoder
         self.label_classifiers = label_classifiers
         self.phrase_classifier = phrase_classifier
-
 
     def forward(self,
                 data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
@@ -44,6 +47,11 @@ class Model(nn.Module):
         phrases = self._collect_phrase(data)
         losses['phrase'] = self.phrase_classifier(hidden, masks, phrases)
         return losses, lens.size(0)
+
+    def named_embeddings(self):
+        yield 'voc', self.embedding.weight, self.text_voc.itos
+        for classifier in self.label_classifiers:
+            yield from classifier.named_embeddings()
 
     def predict(self,
                 data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float]]], int]:

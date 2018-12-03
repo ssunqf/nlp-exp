@@ -7,8 +7,9 @@ from .base import MIN_SCORE
 
 
 class LinearCRF(nn.Module):
-    def __init__(self, hidden_dim, tag_size):
+    def __init__(self, hidden_dim, tag_size, dropout=0.3):
         super(LinearCRF, self).__init__()
+        self.dropout = nn.Dropout(dropout)
         self.hidden2emission = nn.Linear(hidden_dim, tag_size)
         self.transition = nn.Parameter(torch.randn(tag_size, tag_size))
         nn.init.normal_(self.transition, mean=0., std=0.2)
@@ -18,7 +19,7 @@ class LinearCRF(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.normal_(self.transition, mean=0., std=0.2)
+        nn.init.xavier_normal(self.transition)
 
     def _forward_score(self, emissions, lens):
         max_len, batch_size, emission_size = emissions.size()
@@ -59,7 +60,7 @@ class LinearCRF(nn.Module):
         return torch.stack([scores[lens[b]-1][b] for b in range(batch_size)])
 
     def neg_log_likelihood(self, hiddens, lens, masks, tags):
-        emissions = self.hidden2emission(hiddens)
+        emissions = self.hidden2emission(self.dropout(hiddens))
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
         return (forward_score - gold_score).sum(), len(lens)
@@ -88,7 +89,7 @@ class LinearCRF(nn.Module):
         :param lens: batch_size * len
         :return:
         '''
-        emissions = self.hidden2emission(hiddens)
+        emissions = self.hidden2emission(self.dropout(hiddens))
         return [self._viterbi_decode(emissions[:lens[sen_id], sen_id]) for sen_id in range(emissions.size(1))]
 
     # ------------------- only for test ---------------------
@@ -111,7 +112,7 @@ class LinearCRF(nn.Module):
         return forward_var
 
     def valid_neg_log_likelihood(self, hiddens, lens, masks, tags):
-        emissions = self.hidden2emission(hiddens)
+        emissions = self.hidden2emission(self.dropout(hiddens))
         golds = masks.max(-1)[1]
         return sum(
             [self._valid_forward_score(emissions[:lens[b], b]) - self._valid_gold_score(emissions[:lens[b], b], golds[:lens[b], b])
