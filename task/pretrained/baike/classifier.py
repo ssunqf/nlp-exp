@@ -38,7 +38,10 @@ class NegativeSampleLoss(nn.Module):
         # freqs = 1 - (10e-5/torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])).sqrt()
         # return freqs
 
-    def forward(self,
+    def forward(self, features: torch.Tensor, targets: List[torch.Tensor]) -> torch.Tensor:
+        return sum(self._forward(feature, target) for feature, target in zip(features, targets))
+
+    def _forward(self,
                 feature: torch.Tensor,
                 targets: torch.Tensor) -> torch.Tensor:
         probs = self.negative_sample_probs.index_fill_(0, targets, 0)
@@ -73,11 +76,9 @@ class SoftmaxLoss(nn.Module):
         self.label_size = label_size
 
         self.dropout = nn.Dropout(dropout)
-        self.h2o = nn.Linear(label_size, len(voc), bias=False)
+        self.hidden2label = nn.Linear(label_size, len(voc), bias=False)
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
-
-        self.reset_parameters()
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
@@ -87,17 +88,17 @@ class SoftmaxLoss(nn.Module):
         discard_probs = discard_probs.masked_fill(discard_probs < 0, 0)
         return discard_probs
 
-    def reset_parameters(self):
-        nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
+    def forward(self, features: torch.Tensor, targets: List[torch.Tensor]) -> torch.Tensor:
+        log_softmaxes = self.hidden2label(self.dropout(features)).log_softmax(-1)
+        loss = torch.tensor([0.0], device=features.device)
+        for log_softmax, target in zip(log_softmaxes, targets):
+            neg_log_softmax = -log_softmax.gather(-1, target)
+            scaled_ratio = 1 - self.discard_probs.gather(-1, target)
+            loss += (neg_log_softmax * scaled_ratio).sum()
+        return loss
 
-    def forward(self, feature: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        feature = self.dropout(feature)
-        neg_log_softmax = -self.h2o(feature).log_softmax(0).gather(0, targets)
-        scaled_ratio = 1 - self.discard_probs.gather(0, targets)
-        return (neg_log_softmax * scaled_ratio).sum()
-
-    def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.h2o(feature).softmax(0).topk(topk)
+    def predict(self, features: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.hidden2label(self.dropout(features)).softmax(-1).topk(topk, dim=-1)
 
 
 class AdaptiveLoss(nn.Module):
@@ -106,6 +107,7 @@ class AdaptiveLoss(nn.Module):
         self.vocab = vocab
         self.label_size = label_size
 
+        self.dropout = nn.Dropout(dropout)
         self.loss = nn.AdaptiveLogSoftmaxWithLoss(
             label_size,
             len(self.vocab),
@@ -113,8 +115,6 @@ class AdaptiveLoss(nn.Module):
             div_value=2)
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
-
-        self.loss.reset_parameters()
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
@@ -125,15 +125,18 @@ class AdaptiveLoss(nn.Module):
         return discard_probs
 
     def forward(self,
-                feature: torch.Tensor,
-                targets: torch.Tensor) -> torch.Tensor:
-        feature = self.dropout(feature)
-        neg_log_softmax = -self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).gather(0, targets)
-        scaled_ratio = 1 - self.discard_probs.gather(0, targets)
-        return (neg_log_softmax * scaled_ratio).sum()
+                features: torch.Tensor,
+                targets: List[torch.Tensor]) -> torch.Tensor:
+        logits = self.loss.log_prob(self.dropout(features))
+        loss = torch.tensor([0.0], device=features.device)
+        for logit, target in zip(logits, targets):
+            neg_log_softmax = -logit.gather(0, target)
+            scaled_ratio = 1 - self.discard_probs.gather(0, target)
+            loss += (neg_log_softmax * scaled_ratio).sum()
+        return loss
 
     def predict(self, feature: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.loss.log_prob(feature.unsqueeze(0)).squeeze(0).topk(topk)
+        return self.loss.log_prob(self.dropout(feature)).topk(topk, dim=-1)
 
     def _cutoffs(self):
         voc_len = len(self.vocab)
@@ -154,15 +157,13 @@ class LabelClassifier(nn.Module):
     }
 
     def __init__(self, name: str, loss_type: str, voc: Vocab,
-                 hidden_size, label_size, attention_num_heads=None, dropout=0.3):
+                 hidden_size, label_size, dropout=0.3):
         super(LabelClassifier, self).__init__()
         self.name = name
         self.voc = voc
         self.hidden_size = hidden_size
         self.label_size = label_size
 
-        self.attention = None if attention_num_heads is None \
-            else MultiHeadedAttention(attention_num_heads, hidden_size)
         self.hidden2feature = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden_size * 2, self.label_size),
@@ -178,40 +179,45 @@ class LabelClassifier(nn.Module):
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
                 labels: List[List[Label]]) -> torch.Tensor:
-        if self.attention is not None:
-            hidden = self.attention(hidden, hidden, hidden, mask)
-        loss = torch.zeros(1, device=hidden.device)
+        features = []
+        tags = []
         sum = 0
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
                     sum += label.tags.size(0)
-                    span_emb = self._span_embed(hidden, bid, label.begin, label.end)
-                    feature = self.hidden2feature(span_emb)
-                    loss += self.loss(feature, label.tags)
-        return loss / (sum + 1e-5)
+                    features.append(self._span_embed(hidden, bid, label.begin, label.end))
+                    tags.append(label.tags)
+
+        if len(tags) > 0:
+            features = self.hidden2feature(torch.stack(features, dim=0))
+            loss = self.loss(features, tags).mean()
+            return loss / (sum + 1e-5)
+        else:
+            return torch.tensor([0.0], device=hidden.device)
 
     def predict(self,
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
                 labels: List[List[Label]]) -> List[List[Tuple[Label, torch.Tensor]]]:
-        if self.attention is not None:
-            hidden = self.attention(hidden, hidden, hidden, mask)
-        results = []
+        features = []
+        flat_labels = []
         for bid, sen_labels in enumerate(labels):
-            sen_result = []
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    span_emb = self._span_embed(hidden, bid, label.begin, label.end)
-                    feature = self.hidden2feature(span_emb)
-                    scores, indexes = self.loss.predict(feature, 5)
-                    sen_result.append((label, indexes.tolist()))
-            results.append(sen_result)
+                    features.append(self._span_embed(hidden, bid, label.begin, label.end))
+                    flat_labels.append((bid, label))
+        features = self.hidden2feature(torch.stack(features, dim=0))
+        scores, indexes = self.loss.predict(features, 5)
+
+        results = [[] for _ in range(len(labels))]
+        for (bid, label), topk in zip(flat_labels, indexes):
+            results[bid].append((label, topk.tolist()))
 
         return results
 
     def named_embeddings(self):
-        yield self.name, self.loss.h2o.weight, self.loss.voc.itos
+        yield self.name, self.loss.hidden2label.weight, self.loss.voc.itos
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
         return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
@@ -233,6 +239,7 @@ class PhraseClassifier(nn.Module):
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
                 phrases: List[Tuple[int, int, int]]) -> torch.Tensor:
+
         samples, features, targets = self._make_sample(hidden, mask, phrases)
         if len(samples) == 0:
             return torch.tensor([0.0], device=hidden.device)
@@ -263,6 +270,7 @@ class PhraseClassifier(nn.Module):
         return results
 
     def find_phrase(self, hidden: torch.Tensor, mask: torch.Tensor, threshold=0.8) -> List[List[Tuple[int, int, float]]]:
+
         lens = mask.sum(0)
         phrases = []
         for bid in range(lens.size(0)):
@@ -272,9 +280,11 @@ class PhraseClassifier(nn.Module):
                 for step in range(2, min(self.max_length+1, lens[bid] - begin)):
                     samples.append((begin, begin+step))
                     features.append(self._span_embed(hidden, bid, begin, begin + step))
-
-            features = torch.stack(features, dim=0)
-            probs = self.ffn(features).squeeze(-1).tolist()
+            if len(features) > 0:
+                features = torch.stack(features, dim=0)
+                probs = self.ffn(features).squeeze(-1).tolist()
+            else:
+                probs = []
 
             phrases.append([(begin, end, prob) for (begin, end), prob in zip(samples, probs) if prob > threshold])
 

@@ -3,6 +3,7 @@
 import os
 import json
 import gzip
+import random
 import numpy as np
 from collections import Counter, OrderedDict
 from typing import List
@@ -19,8 +20,9 @@ class Field(data.Field):
     '''
         build vocab from counter file
     '''
-    def __init__(self, *args, **kwargs):
+    def __init__(self, mask_token=None, *args, **kwargs):
         super(Field, self).__init__(*args, **kwargs)
+        self.mask_token = mask_token
 
     def build_vocab(self, counter_file, **kwargs):
         with gzip.open(counter_file, mode='rt', compresslevel=6) as file:
@@ -28,7 +30,7 @@ class Field(data.Field):
 
         specials = list(OrderedDict.fromkeys(
             tok for tok in [self.unk_token, self.pad_token, self.init_token,
-                            self.eos_token]
+                            self.eos_token, self.mask_token]
             if tok is not None))
         self.vocab = self.vocab_cls(counter, specials=specials, **kwargs)
 
@@ -67,6 +69,9 @@ class BaikeDataset(Dataset):
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
 
+                if len(examples) > 100000:
+                    break
+        random.shuffle(examples)
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
@@ -98,7 +103,7 @@ class BaikeDataset(Dataset):
 
 def lazy_iter(fields, data_prefix: str, path=None, lazy=True, repeat=True, **kwargs):
     files = [file[len(path)+1:] for file in listfile(os.path.join(path, data_prefix))]
-
+    random.shuffle(files)
     if not lazy:
         datasets = [BaikeDataset.iters(fields, train=file, path=path, **kwargs) for file in files]
         while True:

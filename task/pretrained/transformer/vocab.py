@@ -10,11 +10,11 @@ from .base import BOS, EOS, PAD
 class TagVocab(Vocab):
     def __init__(self, counter, **kwargs):
         super(TagVocab, self).__init__(counter, **kwargs)
-        self.begin_mask = torch.ByteTensor([1 if s.startswith('B_') else 0 for i, s in enumerate(self.itos)])
-        self.end_mask = torch.ByteTensor([1 if s.startswith('E_') else 0 for i, s in enumerate(self.itos)])
-        self.middle_mask = torch.ByteTensor([1 if s.startswith('M_') else 0 for i, s in enumerate(self.itos)])
-        self.single_mask = torch.ByteTensor([1 if s.startswith('S_') else 0 for i, s in enumerate(self.itos)])
-        self.outer_mask = torch.ByteTensor([1 if s.endswith('_O') else 0 for i, s in enumerate(self.itos)])
+        self.begin_mask = torch.tensor([1 if s.startswith('B_') else 0 for i, s in enumerate(self.itos)], dtype=torch.int8)
+        self.end_mask = torch.tensor([1 if s.startswith('E_') else 0 for i, s in enumerate(self.itos)], dtype=torch.int8)
+        self.middle_mask = torch.tensor([1 if s.startswith('M_') else 0 for i, s in enumerate(self.itos)], dtype=torch.int8)
+        self.single_mask = torch.tensor([1 if s.startswith('S_') else 0 for i, s in enumerate(self.itos)], dtype=torch.int8)
+        self.outer_mask = torch.tensor([1 if s.endswith('_O') else 0 for i, s in enumerate(self.itos)], dtype=torch.int8)
 
         self.transition_constraints = torch.ones(len(self), len(self), dtype=torch.uint8)
         for i, si in enumerate(self.itos):

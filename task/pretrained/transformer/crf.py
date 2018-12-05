@@ -4,13 +4,22 @@ import torch
 from torch import nn
 from collections import namedtuple
 from .base import MIN_SCORE
+from .attention import MultiHeadedAttention
 
 
 class LinearCRF(nn.Module):
-    def __init__(self, hidden_dim, tag_size, dropout=0.3):
+    def __init__(self, hidden_dim, tag_size, attention_num_heads=None, dropout=0.3):
         super(LinearCRF, self).__init__()
-        self.dropout = nn.Dropout(dropout)
-        self.hidden2emission = nn.Linear(hidden_dim, tag_size)
+
+        self.attention = None if attention_num_heads is None \
+            else MultiHeadedAttention(attention_num_heads, hidden_dim)
+
+        self.hidden2emission = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Sigmoid(),
+            nn.Linear(hidden_dim, tag_size)
+        )
         self.transition = nn.Parameter(torch.randn(tag_size, tag_size))
         nn.init.normal_(self.transition, mean=0., std=0.2)
         self.hidden_dim = hidden_dim
@@ -19,7 +28,7 @@ class LinearCRF(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.xavier_normal(self.transition)
+        nn.init.xavier_normal_(self.transition)
 
     def _forward_score(self, emissions, lens):
         max_len, batch_size, emission_size = emissions.size()
@@ -59,8 +68,10 @@ class LinearCRF(nn.Module):
 
         return torch.stack([scores[lens[b]-1][b] for b in range(batch_size)])
 
-    def neg_log_likelihood(self, hiddens, lens, masks, tags):
-        emissions = self.hidden2emission(self.dropout(hiddens))
+    def neg_log_likelihood(self, hidden, lens, masks, tags):
+        if self.attention is not None:
+            hidden = self.attention(hidden, hidden, hidden, masks)
+        emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
         return (forward_score - gold_score).sum(), len(lens)
@@ -83,13 +94,15 @@ class LinearCRF(nn.Module):
         best_path.reverse()
         return best_path, best_score
 
-    def forward(self, hiddens, lens):
+    def forward(self, hidden, lens, masks):
         '''
-        :param hiddens: len * batch_size * hidden_dim
+        :param hidden: len * batch_size * hidden_dim
         :param lens: batch_size * len
         :return:
         '''
-        emissions = self.hidden2emission(self.dropout(hiddens))
+        if self.attention is not None:
+            hidden = self.attention(hidden, hidden, hidden, masks)
+        emissions = self.hidden2emission(hidden)
         return [self._viterbi_decode(emissions[:lens[sen_id], sen_id]) for sen_id in range(emissions.size(1))]
 
     # ------------------- only for test ---------------------
@@ -152,6 +165,8 @@ class LinearCRF(nn.Module):
         return list(zip(paths, scores))
 
     def nbest(self, hiddens, lens, topk=5):
+        if self.attention is not None:
+            hidden = self.attention(hiddens, hiddens, hiddens, masks)
         emissions = self.hidden2emission(hiddens)
         return [self._nbest(emissions[:lens[sen_id], sen_id], topk) for sen_id in range(emissions.size(1))]
 
@@ -183,8 +198,8 @@ class MaskedCRF(LinearCRF):
 
         return torch.stack([forward_vars[lens[b] - 1][b] for b in range(batch_size)]).logsumexp(-1)
 
-    def neg_log_likelihood(self, hiddens, lens, masks, tags):
-        emissions = self.hidden2emission(hiddens)
+    def neg_log_likelihood(self, hidden, lens, masks, tags):
+        emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
         mask_score = self._mask_score(emissions, lens, masks, tags)
         return (forward_score - mask_score).sum(), len(lens)

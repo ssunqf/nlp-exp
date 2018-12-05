@@ -6,6 +6,11 @@ import torch
 import gzip
 import os
 
+UNK_TOKEN = '<unk>'
+INIT_TOKEN = '<s>'
+EOS_TOKEN = '</s>'
+PAD_TOKEN = '<pad>'
+MASK_TOKEN = '<mask>'
 
 class Label:
     __slots__ = 'begin', 'end', 'tags'
