@@ -97,26 +97,28 @@ class Tagger(nn.Module):
 
     def _encode(self, batch: data.Batch):
         sens, lens = batch.text
-        masks, tags = batch.tags
+        token_masks = self._make_masks(sens, lens)
         emb = self.embedding(sens)
         if hasattr(batch, 'lattices'):
-            return self.encoder(emb, self._make_masks(sens, lens), batch.lattices)
+            return self.encoder(emb, token_masks, batch.lattices), token_masks
         else:
-            return self.encoder(emb, self._make_masks(sens, lens))
+            return self.encoder(emb, token_masks), token_masks
 
     def predict(self, batch: data.Batch):
         sens, lens = batch.text
-        return self.crf(self._encode(batch), lens)
+        hiddens, token_masks = self._encode(batch)
+        return self.crf(hiddens, lens, token_masks)
 
     def nbest(self, batch: data.Batch):
         sens, lens = batch.text
-        return self.crf.nbest(self._encode(batch), lens, 5)
+        hiddens, token_masks = self._encode(batch)
+        return self.crf.nbest(hiddens, lens, token_masks, 5)
 
     def criterion(self, batch: data.Batch):
         sens, lens = batch.text
-        masks, tags = batch.tags
-        hidden = self._encode(batch)
-        return self.crf.neg_log_likelihood(hidden, lens, masks, tags)
+        tag_masks, tags = batch.tags
+        hidden, token_masks = self._encode(batch)
+        return self.crf.neg_log_likelihood(hidden, lens, token_masks, tag_masks, tags)
 
     def print(self, batch: data.Batch):
         text, text_len = batch.text
@@ -132,7 +134,6 @@ class Tagger(nn.Module):
         gold_masks, gold_tags = batch.tags
         nbests = self.nbest(batch)
 
-        results = []
         for i in range(len(nbests)):
             length = text_len[i]
             sen = [self.words.itos[w] for w in text[0:length, i].data.tolist()]
@@ -149,8 +150,10 @@ class Tagger(nn.Module):
                         yield '%s||%s]] ' % (word, tag[2:])
                     elif tag.startswith('S_'):
                         yield '[[%s||%s]] ' % (word, tag[2:])
-                    else:
+                    elif tag.startswith('M_'):
                         yield word
+                    else:
+                        yield word + ' '
 
             gold_tag = ''.join(tostr(sen, gold_tags[i]))
             # gold_tag = ''.join([tostr(w, id) for w, id in zip(sen, gold_tags[0:length, i].data)])

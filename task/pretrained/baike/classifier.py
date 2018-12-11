@@ -26,10 +26,12 @@ class NegativeSampleLoss(nn.Module):
 
         self.register_buffer('negative_sample_probs', self._negative_sample_probs())
 
-        self.reset_parameters()
+        self.reset_parameter()
 
-    def reset_parameters(self):
-        nn.init.xavier_normal_(self.h2o.weight, gain=nn.init.calculate_gain('sigmoid'))
+    def reset_parameter(self):
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
 
     def _negative_sample_probs(self):
         freqs = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos]).pow(0.75)
@@ -80,6 +82,13 @@ class SoftmaxLoss(nn.Module):
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
 
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
+
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
         counts = torch.tensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos])
@@ -115,6 +124,13 @@ class AdaptiveLoss(nn.Module):
             div_value=2)
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
+
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
@@ -175,6 +191,13 @@ class LabelClassifier(nn.Module):
 
         self.loss = self.loss_dict[loss_type.lower()](self.voc, self.label_size)
 
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
+
     def forward(self,
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
@@ -207,12 +230,13 @@ class LabelClassifier(nn.Module):
                 if label.tags.size(0) > 0:
                     features.append(self._span_embed(hidden, bid, label.begin, label.end))
                     flat_labels.append((bid, label))
-        features = self.hidden2feature(torch.stack(features, dim=0))
-        scores, indexes = self.loss.predict(features, 5)
 
         results = [[] for _ in range(len(labels))]
-        for (bid, label), topk in zip(flat_labels, indexes):
-            results[bid].append((label, topk.tolist()))
+        if len(features) > 0:
+            features = self.hidden2feature(torch.stack(features, dim=0))
+            scores, indexes = self.loss.predict(features, 5)
+            for (bid, label), topk in zip(flat_labels, indexes):
+                results[bid].append((label, topk.tolist()))
 
         return results
 
@@ -234,6 +258,13 @@ class PhraseClassifier(nn.Module):
             nn.Linear(hidden_size * 2, 1),
             nn.Sigmoid()
         )
+
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
 
     def forward(self,
                 hidden: torch.Tensor,

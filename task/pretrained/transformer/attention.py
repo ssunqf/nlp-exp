@@ -90,10 +90,9 @@ class MultiHeadedAttention(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        for layer in [self.query_layer, self.key_value, self.value_layer]:
-            nn.init.normal_(layer.weight, std=0.02)
-            if layer.bias is not None:
-                nn.init.normal_(layer.bias, std=0.02)
+        for child in self.children():
+            if isinstance(child, nn.Linear):
+                nn.init.xavier_normal_(child.weight)
 
     def forward(self, query, key, value, mask=None, batch_first=True):
         if batch_first is False:

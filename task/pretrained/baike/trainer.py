@@ -26,9 +26,6 @@ class Task:
         self.text_vocab = text_vocab
         self.label_vocabs = label_vocabs
 
-    def verbose(self, data):
-
-
     def _pretty_print(self, batch, label_results, phrases, find_phrases=None):
         text, lens = batch.text
         for bid in range(lens.size(0)):

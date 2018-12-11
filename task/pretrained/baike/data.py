@@ -69,9 +69,6 @@ class BaikeDataset(Dataset):
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
 
-                if len(examples) > 100000:
-                    break
-        random.shuffle(examples)
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
@@ -88,7 +85,7 @@ class BaikeDataset(Dataset):
               root='.data', path=None, train=None,
               batch_size_fn=None, vectors=None, **kwargs):
 
-        train, *left  = cls.splits(fields, root=root, path=path, train=train, **kwargs)
+        train, *left  = cls.splits(fields, root=root, path=path, train=train, shuffle=True, **kwargs)
 
         if len(left) == 0:
             train, valid = train.split(split_ratio=(len(train)-10000)/len(train))

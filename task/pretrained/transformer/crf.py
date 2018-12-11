@@ -8,38 +8,41 @@ from .attention import MultiHeadedAttention
 
 
 class LinearCRF(nn.Module):
-    def __init__(self, hidden_dim, tag_size, attention_num_heads=None, dropout=0.3):
+    def __init__(self, hidden_size, num_tags, attention_num_heads=None, dropout=0.3):
         super(LinearCRF, self).__init__()
 
         self.attention = None if attention_num_heads is None \
-            else MultiHeadedAttention(attention_num_heads, hidden_dim)
+            else MultiHeadedAttention(attention_num_heads, hidden_size)
 
         self.hidden2emission = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_size, hidden_size),
             nn.Sigmoid(),
-            nn.Linear(hidden_dim, tag_size)
+            nn.Linear(hidden_size, num_tags)
         )
-        self.transition = nn.Parameter(torch.randn(tag_size, tag_size))
-        nn.init.normal_(self.transition, mean=0., std=0.2)
-        self.hidden_dim = hidden_dim
-        self.tag_size = tag_size
+        self._transition = nn.Parameter(torch.randn(num_tags, num_tags))
+        self.hidden_size = hidden_size
+        self.num_tags = num_tags
 
         self.reset_parameters()
 
+    @property
+    def transition(self):
+        return self._transition
+
     def reset_parameters(self):
-        nn.init.xavier_normal_(self.transition)
+        nn.init.xavier_normal_(self._transition)
 
     def _forward_score(self, emissions, lens):
         max_len, batch_size, emission_size = emissions.size()
-        assert emission_size == self.tag_size
+        assert emission_size == self.num_tags
 
         transition = self.transition.unsqueeze(0).expand(batch_size, -1, -1)
         forward_0 = emissions[0]
 
         forward_vars = [forward_0]
         for time in range(1, max_len, 1):
-            forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.tag_size, -1)
+            forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.num_tags, -1)
             forward_t = (forward_t + transition).logsumexp(-1) + emissions[time]
             forward_vars.append(forward_t)
 
@@ -56,7 +59,7 @@ class LinearCRF(nn.Module):
         :return: Variable(FloatTensor([batch]))
         '''
         max_len, batch_size, emission_size = emissions.size()
-        assert emission_size == self.tag_size
+        assert emission_size == self.num_tags
 
         # [seq_len, batch]
         emissions = emissions.gather(-1, tags.unsqueeze(-1)).squeeze(-1)
@@ -70,7 +73,7 @@ class LinearCRF(nn.Module):
 
     def neg_log_likelihood(self, hidden, lens, masks, tags):
         if self.attention is not None:
-            hidden = self.attention(hidden, hidden, hidden, masks)
+            hidden = hidden + self.attention(hidden, hidden, hidden, masks, batch_first=False)
         emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
@@ -101,7 +104,7 @@ class LinearCRF(nn.Module):
         :return:
         '''
         if self.attention is not None:
-            hidden = self.attention(hidden, hidden, hidden, masks)
+            hidden = hidden + self.attention(hidden, hidden, hidden, masks, batch_first=False)
         emissions = self.hidden2emission(hidden)
         return [self._viterbi_decode(emissions[:lens[sen_id], sen_id]) for sen_id in range(emissions.size(1))]
 
@@ -112,7 +115,7 @@ class LinearCRF(nn.Module):
         forward_var = emissions[0]
 
         for time in range(1, seq_len, 1):
-            forward_var = (forward_var.unsqueeze(0).expand(self.tag_size, -1) + self.transition).logsumexp(-1) + emissions[time]
+            forward_var = (forward_var.unsqueeze(0).expand(self.num_tags, -1) + self.transition).logsumexp(-1) + emissions[time]
 
         return forward_var
 
@@ -135,46 +138,49 @@ class LinearCRF(nn.Module):
         seq_len, _ = emission.size()
         Node = namedtuple('Node', ['tag', 'prev', 'score'])
 
-        stack = [[Node(t, None, emission[0, t])] for t in range(self.tag_size)]
-        stacks = [stack]
+        beam_t = [[Node(t, None, em)] for t, em in enumerate(emission[0].tolist())]
+        beams = [beam_t]
         for time in range(1, seq_len, 1):
-            stack = [
-                [Node(curr_tag, node, node.score + emission[time, curr_tag] + self.transition[curr_tag, node.tag])
-                 for sub in stacks[-1] for node in sub]
-                for curr_tag in range(self.tag_size)
+            beam_t = [
+                [Node(curr_tag, prev, prev.score + emission[time, curr_tag].item() + self.transition[curr_tag, prev.tag].item())
+                 for sub in beams[-1] for prev in sub]
+                for curr_tag in range(self.num_tags)
             ]
-            stack = [sorted(curr_tag, key=lambda node: node.score, reverse=True)[0:topk] for curr_tag in stack]
-            stacks.append(stack)
+            beam_t = [sorted(curr_tag, key=lambda node: node.score, reverse=True)[0:topk] for curr_tag in beam_t]
+            beams.append(beam_t)
 
-        last = sorted([node for curr_tag in stacks[-1] for node in curr_tag], key=lambda n: n.score, reverse=True)[0:topk]
+        last = sorted([node for curr_tag in beams[-1] for node in curr_tag], key=lambda n: n.score, reverse=True)[0:topk]
+
+        print(last)
 
         paths = []
         scores = []
         for node in last:
-            scores.append(node.score.item())
-            path = [node.tag]
-            node = node.prev
-            while True:
+            scores.append(node.score)
+            path = []
+            while node is not None:
                 path.append(node.tag)
-                if node.prev is None:
-                    break
                 node = node.prev
             path.reverse()
             paths.append(path)
 
         return list(zip(paths, scores))
 
-    def nbest(self, hiddens, lens, topk=5):
+    def nbest(self, hiddens, lens, masks, topk=5):
         if self.attention is not None:
-            hidden = self.attention(hiddens, hiddens, hiddens, masks)
+            hiddens = hiddens + self.attention(hiddens, hiddens, hiddens, masks, batch_first=False)
         emissions = self.hidden2emission(hiddens)
         return [self._nbest(emissions[:lens[sen_id], sen_id], topk) for sen_id in range(emissions.size(1))]
 
 
 class MaskedCRF(LinearCRF):
-    def __init__(self, hidden_dim, tag_size, transition_constraints):
-        super(MaskedCRF, self).__init__(hidden_dim, tag_size)
+    def __init__(self, hidden_size, num_tags, transition_constraints, attention_num_heads=None, dropout=0.3):
+        super(MaskedCRF, self).__init__(hidden_size, num_tags, attention_num_heads=attention_num_heads)
         self.register_buffer('transition_constraints', transition_constraints)
+
+    @property
+    def transition(self):
+        return self._transition.masked_fill(self.transition_constraints == 0, MIN_SCORE)
 
     def _mask_score(self, emissions, lens, masks, tags):
         '''
@@ -184,23 +190,26 @@ class MaskedCRF(LinearCRF):
         :return: FloatTensor(batch_size)
         '''
         max_len, batch_size, emission_size = emissions.size()
-        assert emission_size == self.tag_size
+        assert emission_size == self.num_tags
 
-        transition = self.transition.masked_fill(self.transition_constraints == 0, MIN_SCORE).unsqueeze(0)
+        transition = self.transition.unsqueeze(0)
 
         forward_0 = emissions[0].masked_fill(masks[0] == 0, MIN_SCORE)
 
         forward_vars = [forward_0]
         for time in range(1, max_len, 1):
-            forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.tag_size, -1)
+            forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.num_tags, -1)
             forward_t = (forward_t + transition).logsumexp(-1) + emissions[time]
             forward_vars.append(forward_t.masked_fill(masks[time] == 0, MIN_SCORE))
 
         return torch.stack([forward_vars[lens[b] - 1][b] for b in range(batch_size)]).logsumexp(-1)
 
-    def neg_log_likelihood(self, hidden, lens, masks, tags):
-        emissions = self.hidden2emission(hidden)
+    def neg_log_likelihood(self, hiddens, lens, h_masks, tag_masks, tags):
+        if self.attention:
+            hiddens = hiddens + self.attention(hiddens, hiddens, hiddens, h_masks, batch_first=False)
+
+        emissions = self.hidden2emission(hiddens)
         forward_score = self._forward_score(emissions, lens)
-        mask_score = self._mask_score(emissions, lens, masks, tags)
+        mask_score = self._mask_score(emissions, lens, tag_masks, tags)
         return (forward_score - mask_score).sum(), len(lens)
 
