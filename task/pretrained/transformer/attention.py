@@ -130,3 +130,30 @@ class MultiHeadedAttention(nn.Module):
         assert head_size == self.num_head
         assert head_dim == self.head_dim
         return input.transpose(1, 2).contiguous().view(batch_size, seq_len, self.num_head * self.head_dim)
+
+
+class AttentionLayer(nn.Module):
+    """
+    A residual connection followed by a layer norm.
+    Note for code simplicity the norm is first as opposed to last.
+    """
+    def __init__(self, size, num_head, dropout=0.1):
+        super(AttentionLayer, self).__init__()
+        self.output_linear = nn.Linear(size, size)
+        self.norm = nn.LayerNorm(size)
+        self.dropout = nn.Dropout(dropout)
+
+        self.multi_head_atten = MultiHeadedAttention(num_head, size, dropout=dropout)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.normal_(self.output_linear.weight, std=0.02)
+        if self.output_linear.bias is not None:
+            nn.init.normal_(self.output_linear.bias, std=0.02)
+
+    def forward(self, input, mask=None, batch_first=False):
+        "Apply residual connection to any sublayer with the same size."
+        atten_output = self.multi_head_atten(input, input, input, mask, batch_first)
+        atten_output = self.output_linear(atten_output)
+        return self.norm(input + self.dropout(atten_output))
