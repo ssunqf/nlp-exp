@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from collections import namedtuple
 from .base import MIN_SCORE
-from .attention import MultiHeadedAttention
+from .attention import MultiHeadedAttention, AttentionLayer
 
 
 class LinearCRF(nn.Module):
@@ -12,10 +12,9 @@ class LinearCRF(nn.Module):
         super(LinearCRF, self).__init__()
 
         self.attention = None if attention_num_heads is None \
-            else MultiHeadedAttention(attention_num_heads, hidden_size)
+            else AttentionLayer(hidden_size, attention_num_heads)
 
         self.hidden2emission = nn.Sequential(
-            nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size),
             nn.Sigmoid(),
             nn.Linear(hidden_size, num_tags)
@@ -73,7 +72,7 @@ class LinearCRF(nn.Module):
 
     def neg_log_likelihood(self, hidden, lens, masks, tags):
         if self.attention is not None:
-            hidden = hidden + self.attention(hidden, hidden, hidden, masks, batch_first=False)
+            hidden = self.attention(hidden, masks, batch_first=False)
         emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
@@ -104,7 +103,7 @@ class LinearCRF(nn.Module):
         :return:
         '''
         if self.attention is not None:
-            hidden = hidden + self.attention(hidden, hidden, hidden, masks, batch_first=False)
+            hidden = self.attention(hidden, masks, batch_first=False)
         emissions = self.hidden2emission(hidden)
         return [self._viterbi_decode(emissions[:lens[sen_id], sen_id]) for sen_id in range(emissions.size(1))]
 
@@ -168,7 +167,7 @@ class LinearCRF(nn.Module):
 
     def nbest(self, hiddens, lens, masks, topk=5):
         if self.attention is not None:
-            hiddens = hiddens + self.attention(hiddens, hiddens, hiddens, masks, batch_first=False)
+            hiddens = self.attention(hiddens, masks, batch_first=False)
         emissions = self.hidden2emission(hiddens)
         return [self._nbest(emissions[:lens[sen_id], sen_id], topk) for sen_id in range(emissions.size(1))]
 
@@ -206,7 +205,7 @@ class MaskedCRF(LinearCRF):
 
     def neg_log_likelihood(self, hiddens, lens, h_masks, tag_masks, tags):
         if self.attention:
-            hiddens = hiddens + self.attention(hiddens, hiddens, hiddens, h_masks, batch_first=False)
+            hiddens = self.attention(hiddens, h_masks, batch_first=False)
 
         emissions = self.hidden2emission(hiddens)
         forward_score = self._forward_score(emissions, lens)

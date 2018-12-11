@@ -222,7 +222,7 @@ class Tagger(nn.Module):
             begin = end
 
         for t in preds:
-            if t[0:2] in ['B_', 'S_']:
+            if t[0:2] in ['B_', 'S_'] and not t.endswith('_O'):
                 pred_counts[t[2:]] += 1
             # elif t in ['O', '*']:
             #    pred_counts[t] += 1
@@ -474,7 +474,7 @@ class FineConfig:
         self.attention_num_heads = 8
         self.encoder_depth = 2
 
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.device = torch.device('cpu') # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         self.cached_dataset_prefix = './ner/dataset'
         self.checkpoint_path = './ner/attention/model/mode_{}_emb_{}_hidden_{}_layer_{}_head_{}'.format(
