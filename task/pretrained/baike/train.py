@@ -13,16 +13,17 @@ import torch
 from torch import nn, optim
 from tqdm import tqdm
 from torchtext.vocab import Vocab
+from torchtext import data
 from torchtext.data.iterator import BucketIterator
 
-from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN
+from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN
 from .model import Model
 from .data import BaikeDataset, Field, LabelField, lazy_iter
 from .encoder import LSTMEncoder, StackLSTM
 from .classifier import LabelClassifier, PhraseClassifier
 
 from task.pretrained.transformer.attention import MultiHeadedAttention
-from ..transformer.transformer import Tagger, MaskedCRF
+from ..transformer.transformer import Tagger, MaskedCRF, LinearCRF
 from ..transformer.field import PartialField
 from ..transformer import base
 from ..transformer.dataset import TaggerDataset
@@ -231,6 +232,9 @@ class Trainer:
                             'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()},
                             num_iterations)
 
+                        total_batch, start = 1e-10, time.time()
+                        label_losses = collections.defaultdict(float)
+
                     if num_iterations % (self.valid_step * 5) == 0:
                         for tag, mat, metadata in self.model.named_embeddings():
                             if len(metadata) > self.config.projector_max_size:
@@ -238,9 +242,6 @@ class Trainer:
                                 mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
                                 metadata = metadata[:half_size] + metadata[-half_size:]
                             self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
-
-                        total_batch, start = 1e-10, time.time()
-                        label_losses = collections.defaultdict(float)
 
                     if train_it.iterations % (self.valid_step) == 0:
                         for n, scores in self.metrics(valid_it).items():
@@ -262,7 +263,10 @@ class Trainer:
 
         while len(self.checkpoint_files) > 5:
             loss, file = self.checkpoint_files.popleft()
-            os.remove(file)
+            try:
+                os.remove(file)
+            except:
+                pass
 
     @staticmethod
     def load_voc(config):
@@ -313,7 +317,8 @@ class Trainer:
             LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_size)
-        model = Model(text_field.vocab, embedding, encoder, attention, label_classifiers, phrase_classifier, config.phrase_mask_prob)
+        model = Model(text_field.vocab, embedding,
+                      encoder, attention, label_classifiers, phrase_classifier, config.phrase_mask_prob)
 
         model.to(config.device)
 
@@ -346,10 +351,8 @@ class FineTrainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.crf.parameters(), lr=1e-3)
-        self.shared_optimizer = optim.Adam(
-            list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()),
-            lr=1e-4)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
+        # self.shared_optimizer = optim.Adam(list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()), lr=1e-5)
 
         self.train_it, self.valid_it, self.test_it = \
             partial_train_it, partial_valid_it, partial_test_it
@@ -382,6 +385,12 @@ class FineTrainer:
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 
+    def _model_training(self, all=False):
+        if all is False:
+            self.model.embedding.eval()
+            self.model.encoder.eval()
+        self.model.crf.train()
+
     def train_one(self, batch, scale) -> Tuple[float, int]:
         self.model.train()
         self.model.zero_grad()
@@ -392,28 +401,28 @@ class FineTrainer:
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
-        torch.nn.utils.clip_grad_norm_(self.model.crf.parameters(), 5)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
         self.optimizer.step()
-        self.shared_optimizer.step()
+        # self.shared_optimizer.step()
         return rloss, num_sen
 
     def valid(self, valid_it) -> float:
         self.model.eval()
         with torch.no_grad():
-            valid_loss = 0
-            valid_tokens = 0
+            total_loss = 0
+            num_samples = 0
 
             sample = False
-            for _, valid_batch in enumerate(valid_it):
+            for _, valid_batch in tqdm(enumerate(valid_it), desc='valid', total=len(self.valid_it)):
                 loss, num_token = self.model.criterion(valid_batch)
 
-                valid_loss += loss.item()
-                valid_tokens += num_token
+                total_loss += loss.item()
+                num_samples += num_token
 
                 if not sample and random.random() < 0.02:
                     self.model.sample(valid_batch)
 
-            return valid_loss / valid_tokens
+            return total_loss / num_samples, num_samples
 
     def train(self):
         total_loss, total_sen, start = 0, 1e-10, time.time()
@@ -430,19 +439,19 @@ class FineTrainer:
                 train_speed = total_sen / (time.time() - start)
 
                 inference_start = time.time()
-                valid_loss = self.valid(self.valid_it)
+                valid_loss, valid_num_samples = self.valid(self.valid_it)
 
                 self.checkpoint(checkpoint_losses, valid_loss)
 
                 print("train loss=%.6f\t\tvalid loss=%.6f" % (total_loss/total_sen, valid_loss))
                 print("speed:   train %.2f sentence/s  valid %.2f sentence/s\n\n" %
-                      (train_speed, len(self.valid_it) / (time.time() - inference_start)))
+                      (train_speed, valid_num_samples / (time.time() - inference_start)))
 
                 self.summary_writer.add_scalars('loss', {'train': total_loss/total_sen, 'valid': valid_loss}, step)
 
                 total_loss, total_sen, start = 0, 1e-10, time.time()
 
-            if self.train_it.iterations % (self.valid_step * 5) == 0:
+            if self.train_it.iterations % (self.valid_step) == 0:
                 with torch.no_grad():
                     # pass
                     eval_res = self.model.evaluation(self.test_it)
@@ -466,38 +475,46 @@ class FineTrainer:
 
     @classmethod
     def create(cls, coarse_config, checkpoint, fine_config):
-        TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL = Trainer.load_voc(coarse_config)
-        model = Trainer.load_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL)
-        if checkpoint:
+        if checkpoint is not None:
+            TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL = Trainer.load_voc(coarse_config)
+            model = Trainer.load_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL)
             states = torch.load(checkpoint)
             model.load_state_dict(states['model'])
+            embedding, encoder = model.embedding, model.encoder
+        else:
+            TEXT = data.Field(include_lengths=True, init_token=INIT_TOKEN, eos_token=EOS_TOKEN, pad_token=PAD_TOKEN)
+            embedding, encoder = None, None
 
-        summary_writer = SummaryWriter(log_dir=coarse_config.summary_dir)
-        for tag, mat, metadata in model.named_embeddings():
-            mat = mat[:coarse_config.projector_max_size]
-            metadata = metadata[:coarse_config.projector_max_size]
-            summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
-
-        tag_field = PartialField(init_token='<s>', eos_token='</s>')
+        tag_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
         train, valid, test = TaggerDataset.splits(
             path=fine_config.full_prefix,
             train=fine_config.train,
             validation=fine_config.valid,
             test=fine_config.test,
-            fields=[('text', TEXT), ('tags', tag_field)], )
+            fields=[('text', TEXT), ('tags', tag_field)])
 
+        if checkpoint is None:
+            TEXT.build_vocab(train, min_freq=fine_config.text_min_freq)
         tag_field.build_vocab(train, min_freq=fine_config.tag_min_freq)
 
         train_it, valid_it, test_it = \
             BucketIterator.splits([train, valid, test],
                                   batch_sizes=fine_config.batch_sizes,
+                                  shuffle=True,
                                   sort_within_batch=True,
                                   device=fine_config.device)
 
         train_it.repeat = True
 
-        crf = MaskedCRF(coarse_config.encoder_size, len(tag_field.vocab), tag_field.vocab.transition_constraints)
-        fine_model = Tagger(TEXT.vocab, tag_field.vocab, model.embedding, model.encoder, crf)
+        if checkpoint is None:
+            embedding = nn.Embedding(len(TEXT.vocab), coarse_config.embedding_size)
+            encoder = StackLSTM(coarse_config.embedding_size, coarse_config.encoder_size,
+                            coarse_config.encoder_num_layers, residual=False, dropout=0.2)
+        crf = MaskedCRF(coarse_config.encoder_size,
+                        len(tag_field.vocab),
+                        tag_field.vocab.transition_constraints,
+                        fine_config.attention_num_heads)
+        fine_model = Tagger(TEXT.vocab, tag_field.vocab, embedding, encoder, crf)
 
         fine_model.to(fine_config.device)
 
@@ -509,17 +526,17 @@ class FineTrainer:
 
 class CoarseConfig:
     def __init__(self):
-        self.root = './baike/preprocess3'
+        self.root = './baike/preprocess4'
         self.train_file = 'sentence.url'
 
         self.embedding_size = 256
-        self.encoder_size = 256
+        self.encoder_size = 512
         self.encoder_num_layers = 2
         self.attention_num_heads = 8
 
         self.label_size = 256
 
-        self.phrase_mask_prob = 0.1
+        self.phrase_mask_prob = 0.2
 
         self.valid_step = 1000
         self.warmup_step = 5000
@@ -560,7 +577,7 @@ class FineConfig:
         self.text_min_freq = 10
         # text_min_size = 50000
 
-        self.tag_min_freq = 1
+        self.tag_min_freq = 10
         # tag_min_size = 50000
 
         self.common_size = 1000
@@ -569,14 +586,14 @@ class FineConfig:
         self.vocab_size = 100
         self.embedding_size = 512
         self.encoder_size = 512
-        self.attention_num_head = 8
+        self.attention_num_heads = 8
         self.encoder_depth = 2
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         self.cached_dataset_prefix = './pos/dataset'
         self.checkpoint_path = './pos/model/mode_{}_emb_{}_hidden_{}_layer_{}_head_{}'.format(
-            'lstm', self.embedding_size, self.encoder_size, self.encoder_depth, self.attention_num_head)
+            'lstm', self.embedding_size, self.encoder_size, self.encoder_depth, self.attention_num_heads)
 
         # summary parameters
         self.summary_dir = os.path.join('./pos', 'summary')
@@ -595,7 +612,6 @@ if __name__ == '__main__':
     if args.fine is False:
         trainer = Trainer.create(CoarseConfig(), args.checkpoint)
     else:
-        assert args.checkpoint is not None
         trainer = FineTrainer.create(CoarseConfig(), args.checkpoint, FineConfig())
 
     trainer.train()
