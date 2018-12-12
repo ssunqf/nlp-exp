@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from .base import Label, MASK_TOKEN
 from .encoder import LSTMEncoder
-from task.pretrained.transformer.attention import MultiHeadedAttention
+from task.pretrained.transformer.attention import TransformerLayer
 from .classifier import LabelClassifier, PhraseClassifier
 from .preprocess import PhraseLabel
 
@@ -25,20 +25,21 @@ class Model(nn.Module):
                  text_voc: Vocab,
                  embedding: nn.Embedding,
                  encoder: LSTMEncoder,
-                 attention: MultiHeadedAttention,
+                 transformer: TransformerLayer,
                  label_classifiers: nn.ModuleList,
                  phrase_classifier: PhraseClassifier,
-                 phrase_mask_prob):
+                 phrase_mask_prob: float):
         super(Model, self).__init__()
 
         self.text_voc = text_voc
         self.mask_token_id = self.text_voc.stoi[MASK_TOKEN]
-        self.phrase_mask_prob = phrase_mask_prob
         self.embedding = embedding
         self.encoder = encoder
-        self.attention = attention
+        self.transformer = transformer
         self.label_classifiers = label_classifiers
         self.phrase_classifier = phrase_classifier
+
+        self.phrase_mask_prob = phrase_mask_prob
 
     def forward(self, data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
         text, lens = data.text
@@ -46,8 +47,8 @@ class Model(nn.Module):
         text = self._mask_phrase(text, phrases)
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
-        if self.attention:
-            hidden = self.attention(hidden, hidden, hidden, masks, batch_first=False)
+        if self.transformer:
+            hidden = self.transformer(hidden, masks, batch_first=False)
 
         losses = {}
         for classifier in self.label_classifiers:
@@ -67,8 +68,8 @@ class Model(nn.Module):
         text, lens = data.text
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
-        if self.attention:
-            hidden = self.attention(hidden, hidden, hidden, masks, batch_first=False)
+        if self.transformer:
+            hidden = self.transformer(hidden, masks, batch_first=False)
 
         results = defaultdict(list)
         for classifier in self.label_classifiers:
@@ -83,8 +84,8 @@ class Model(nn.Module):
         text, lens = data.text
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
-        if self.attention:
-            hidden = self.attention(hidden, hidden, hidden, masks, batch_first=False)
+        if self.transformer:
+            hidden = self.transformer(hidden, masks, batch_first=False)
         phrases = self.phrase_classifier.find_phrase(hidden, masks)
 
         return phrases

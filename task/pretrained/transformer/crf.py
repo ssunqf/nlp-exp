@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from collections import namedtuple
 from .base import MIN_SCORE
-from .attention import MultiHeadedAttention, AttentionLayer
+from .attention import MultiHeadedAttention, TransformerLayer
 
 
 class LinearCRF(nn.Module):
@@ -12,7 +12,7 @@ class LinearCRF(nn.Module):
         super(LinearCRF, self).__init__()
 
         self.attention = None if attention_num_heads is None \
-            else AttentionLayer(hidden_size, attention_num_heads)
+            else TransformerLayer(hidden_size, attention_num_heads)
 
         self.hidden2emission = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),

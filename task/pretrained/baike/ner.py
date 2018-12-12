@@ -16,7 +16,7 @@ from .encoder import StackLSTM
 from ..transformer.crf import LinearCRF, MaskedCRF
 from ..transformer.vocab import TagVocab
 from ..transformer.field import PartialField
-from .train import Trainer, CoarseConfig, FineConfig
+from .train import Trainer, CoarseConfig
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN
 
 from tensorboardX import SummaryWriter

@@ -70,7 +70,7 @@ def gelu(input: torch.Tensor):
     return input * cdf
 
 
-activations = {'gelu': gelu, 'relu': F.relu, 'sigmoid': F.sigmoid, 'tanh': F.tanh}
+activations = {'gelu': gelu, 'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh}
 
 
 def get_act_func(name: str):
@@ -81,17 +81,13 @@ def get_act_func(name: str):
 # ------------------------------------------------------
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
-    def __init__(self, dim, act_name='relu', dropout=0.1):
+    def __init__(self, size: int, activation: nn.Module=nn.ReLU(), dropout=0.3):
         super(PositionwiseFeedForward, self).__init__()
-        self.linear = nn.Linear(dim, dim)
-        self.activation = get_act_func(act_name)
+        self.model = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(size, size),
+            activation,
+            nn.Linear(size, size))
 
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.normal_(self.linear.weight, std=0.02)
-        if self.linear.bias is not None:
-            nn.init.normal_(self.linear.bias, std=0.02)
-
-    def forward(self, x):
-        return self.activation(self.linear(x))
+    def forward(self, input):
+        return self.model(input)

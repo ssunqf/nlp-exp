@@ -15,7 +15,7 @@ from .base import Label
 
 
 class NegativeSampleLoss(nn.Module):
-    def __init__(self, voc: Vocab, label_size: int, sample_ratio=2, dropout=0.3):
+    def __init__(self, voc: Vocab, label_size: int, sample_ratio=2, dropout=0.5):
         super(NegativeSampleLoss, self).__init__()
         self.voc = voc
         self.label_size = label_size
@@ -25,13 +25,6 @@ class NegativeSampleLoss(nn.Module):
         self.h2o = nn.Linear(label_size, len(voc), bias=False)
 
         self.register_buffer('negative_sample_probs', self._negative_sample_probs())
-
-        self.reset_parameter()
-
-    def reset_parameter(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
 
     def _negative_sample_probs(self):
         freqs = torch.FloatTensor([self.voc.freqs.get(s, 1e-5) for s in self.voc.itos]).pow(0.75)
@@ -72,7 +65,7 @@ class NegativeSampleLoss(nn.Module):
 
 
 class SoftmaxLoss(nn.Module):
-    def __init__(self, voc: Vocab, label_size: int, dropout=0.3):
+    def __init__(self, voc: Vocab, label_size: int, dropout=0.5):
         super(SoftmaxLoss, self).__init__()
         self.voc = voc
         self.label_size = label_size
@@ -81,13 +74,6 @@ class SoftmaxLoss(nn.Module):
         self.hidden2label = nn.Linear(label_size, len(voc), bias=False)
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
-
-        self.reset_parameter()
-
-    def reset_parameter(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
@@ -103,7 +89,7 @@ class SoftmaxLoss(nn.Module):
         for log_softmax, target in zip(log_softmaxes, targets):
             neg_log_softmax = -log_softmax.gather(-1, target)
             scaled_ratio = 1 - self.discard_probs.gather(-1, target)
-            loss += (neg_log_softmax * scaled_ratio).sum()
+            loss += (neg_log_softmax * scaled_ratio).mean()
         return loss
 
     def predict(self, features: torch.Tensor, topk=5) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -111,7 +97,7 @@ class SoftmaxLoss(nn.Module):
 
 
 class AdaptiveLoss(nn.Module):
-    def __init__(self, vocab: Vocab, label_size: int, dropout=0.3):
+    def __init__(self, vocab: Vocab, label_size: int, dropout=0.5):
         super(AdaptiveLoss, self).__init__()
         self.vocab = vocab
         self.label_size = label_size
@@ -124,13 +110,6 @@ class AdaptiveLoss(nn.Module):
             div_value=2)
 
         self.discard_probs = nn.Parameter(self._discard_probs(), requires_grad=False)
-
-        self.reset_parameter()
-
-    def reset_parameter(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
 
     # http://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
     def _discard_probs(self):
@@ -173,7 +152,7 @@ class LabelClassifier(nn.Module):
     }
 
     def __init__(self, name: str, loss_type: str, voc: Vocab,
-                 hidden_size, label_size, dropout=0.3):
+                 hidden_size, label_size, dropout=0.5):
         super(LabelClassifier, self).__init__()
         self.name = name
         self.voc = voc
@@ -182,7 +161,7 @@ class LabelClassifier(nn.Module):
 
         self.hidden2feature = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * 2, self.label_size),
+            nn.Linear(hidden_size * 3, self.label_size),
             nn.Sigmoid(),
             nn.Linear(self.label_size, self.label_size)
         )
@@ -191,31 +170,24 @@ class LabelClassifier(nn.Module):
 
         self.loss = self.loss_dict[loss_type.lower()](self.voc, self.label_size)
 
-        self.reset_parameter()
-
-    def reset_parameter(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
-
     def forward(self,
                 hidden: torch.Tensor,
                 mask: torch.Tensor,
                 labels: List[List[Label]]) -> torch.Tensor:
         features = []
         tags = []
-        sum = 0
+        counter = 0
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    sum += label.tags.size(0)
+                    counter += 1 # label.tags.size(0)
                     features.append(self._span_embed(hidden, bid, label.begin, label.end))
                     tags.append(label.tags)
 
         if len(tags) > 0:
             features = self.hidden2feature(torch.stack(features, dim=0))
-            loss = self.loss(features, tags).mean()
-            return loss / (sum + 1e-5)
+            loss = self.loss(features, tags)
+            return loss / (counter + 1e-5)
         else:
             return torch.tensor([0.0], device=hidden.device)
 
@@ -244,27 +216,21 @@ class LabelClassifier(nn.Module):
         yield self.name, self.loss.hidden2label.weight, self.loss.voc.itos
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
-        return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
+        mean = hidden[begin:end, bid].mean(0)
+        return torch.cat([hidden[begin, bid], mean, hidden[end-1, bid]], dim=-1)
 
 
 class PhraseClassifier(nn.Module):
-    def __init__(self, hidden_size, max_length=15, dropout=0.3):
+    def __init__(self, hidden_size, max_length=15, dropout=0.5):
         super(PhraseClassifier, self).__init__()
 
         self.hidden_size = hidden_size
         self.max_length = max_length
         self.ffn = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * 2, 1),
+            nn.Linear(hidden_size * 3, 1),
             nn.Sigmoid()
         )
-
-        self.reset_parameter()
-
-    def reset_parameter(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
 
     def forward(self,
                 hidden: torch.Tensor,
@@ -275,12 +241,7 @@ class PhraseClassifier(nn.Module):
         if len(samples) == 0:
             return torch.tensor([0.0], device=hidden.device)
 
-        pos_weight = (targets.size(0) - targets.sum().item()) / targets.size(0)
-        weights = torch.full(targets.size(),
-                             1 - pos_weight,
-                             device=hidden.device).masked_fill_(targets > 0.5, pos_weight)
-        loss = F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1), reduction='none')
-        return torch.mean(loss.squeeze() * weights)
+        return F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1))
 
     def predict(self,
                 hidden: torch.Tensor,
@@ -352,4 +313,5 @@ class PhraseClassifier(nn.Module):
         return samples, features, targets
 
     def _span_embed(self, hidden: torch.Tensor, bid: int, begin: int, end: int):
-        return torch.cat([hidden[begin, bid], hidden[end-1, bid]], dim=-1)
+        mean = hidden[begin:end, bid].mean(0)
+        return torch.cat([hidden[begin, bid], mean, hidden[end-1, bid]], dim=-1)

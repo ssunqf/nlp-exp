@@ -14,10 +14,13 @@ from tqdm import tqdm
 from task.util import utils
 from .base import PhraseLabel, mixed_open
 
+LINK_PREFIX = 'link::'
+ATTR_PREFIX = 'attr::'
 prefix = 'https://baike.baidu.com/item'
 
 key_blacklist = {'中文名', '中文名称'}
 subtitle_blacklist = {'内容简介', '简介', '目录'}
+
 
 class Voc:
     def __init__(self, counter: Dict):
@@ -51,6 +54,7 @@ class Voc:
                             counter[text] = int(count)
         print('length = ', len(counter))
         return Voc(counter)
+
 
 class Entity:
     def __init__(self, url: str, names: List[str],
@@ -126,27 +130,33 @@ class Labeler:
         self.subtitle_voc = subtitle_voc
 
     def label(self, sentence: str):
-        words = []
-        labels = []
+        words, labels = [], []
         for phrase in split(sentence):
             if isinstance(phrase, str):
                 words.extend(w for t, w in utils.replace_entity(phrase))
             elif isinstance(phrase, tuple):
                 assert len(phrase) == 2
-                name, url = phrase
+                name, info = phrase
                 begin = len(words)
                 words.extend(w for t, w in utils.replace_entity(name))
                 end = len(words)
-                entity = self.entities.get(url[len(prefix):])
-                if entity and entity.valid(name):
-                    keys, attrs, subtitles = entity.get_labels()
-                    keys = [self.key_voc.get_str(k) for k in keys]
-                    attrs = [self.attr_voc.get_str(a) for a in attrs]
-                    subtitles = [self.subtitle_voc.get_str(s) for s in subtitles]
-                    self.key_counter.update(keys)
-                    self.attr_counter.update(attrs)
-                    self.subtitle_counter.update(subtitles)
-                    labels.append(PhraseLabel(begin, end, keys=keys, attrs=attrs, subtitles=subtitles))
+                if info.startswith(LINK_PREFIX):
+                    url = info[len(LINK_PREFIX) + len(prefix):]
+                    entity = self.entities.get(url)
+                    if entity and entity.valid(name):
+                        keys, attrs, subtitles = entity.get_labels()
+                        keys = [self.key_voc.get_str(k) for k in keys]
+                        attrs = [self.attr_voc.get_str(a) for a in attrs]
+                        subtitles = [self.subtitle_voc.get_str(s) for s in subtitles]
+                        self.key_counter.update(keys)
+                        self.attr_counter.update(attrs)
+                        self.subtitle_counter.update(subtitles)
+                        labels.append(PhraseLabel(begin, end, keys=keys, attrs=attrs, subtitles=subtitles))
+                    else:
+                        labels.append(PhraseLabel(begin, end))
+                elif info.startswith(ATTR_PREFIX):
+                    attr_name = info[len(ATTR_PREFIX):]
+                    labels.append(PhraseLabel(begin, end, attr_name=[attr_name]))
 
         if len(labels) > 0:
             self.text_counter.update(words)
@@ -184,6 +194,11 @@ def listfile(path: str):
                 for name in os.listdir(dir) if name.startswith(prefix)]
 
 
+def save_counter(path: str, counter: Counter):
+    with mixed_open(path, 'wt') as file:
+        file.write(json.dumps(counter.most_common(), ensure_ascii=False, indent=2))
+
+
 if __name__ == '__main__':
 
     argparser = argparse.ArgumentParser(description='Preprocess baike corpus and save vocabulary')
@@ -216,14 +231,10 @@ if __name__ == '__main__':
                             ' '.join(words),
                             '\t\t'.join(l.to_json() for l in labels)))
 
-    def _save_counter(path: str, counter: Counter):
-        with mixed_open(path, 'wt') as file:
-            file.write(json.dumps(counter.most_common(), ensure_ascii=False, indent=2))
+    save_counter(os.path.join(args.output, 'text.voc.gz'), labeler.text_counter)
 
-    _save_counter(os.path.join(args.output, 'text.voc.gz'), labeler.text_counter)
+    save_counter(os.path.join(args.output, 'key.voc.gz'), labeler.key_counter)
 
-    _save_counter(os.path.join(args.output, 'key.voc.gz'), labeler.key_counter)
+    save_counter(os.path.join(args.output, 'attr.voc.gz'), labeler.attr_counter)
 
-    _save_counter(os.path.join(args.output, 'attr.voc.gz'), labeler.attr_counter)
-
-    _save_counter(os.path.join(args.output, 'subtitle.voc.gz'), labeler.subtitle_counter)
+    save_counter(os.path.join(args.output, 'subtitle.voc.gz'), labeler.subtitle_counter)
