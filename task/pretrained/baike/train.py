@@ -348,8 +348,8 @@ class Trainer:
 
 class CoarseConfig:
     def __init__(self, output_dir=None):
-        self.root = './baike/preprocess'
-        self.train_file = 'entity.sentence'
+        self.root = './baike/preprocess4'
+        self.train_file = 'sentence.url'
 
         self.embedding_size = 128
         self.encoder_size = 512
