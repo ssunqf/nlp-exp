@@ -85,7 +85,7 @@ class BaikeDataset(Dataset):
               root='.data', path=None, train=None,
               batch_size_fn=None, vectors=None, **kwargs):
 
-        train, *left  = cls.splits(fields, root=root, path=path, train=train, shuffle=True, **kwargs)
+        train, *left  = cls.splits(fields, root=root, path=path, train=train, **kwargs)
 
         if len(left) == 0:
             train, valid = train.split(split_ratio=(len(train)-10000)/len(train))
@@ -94,7 +94,7 @@ class BaikeDataset(Dataset):
 
         return data.BucketIterator.splits(
             [train, valid],
-            batch_size=batch_size, batch_size_fn=batch_size_fn, sort_within_batch=True,
+            batch_sizes=[batch_size, batch_size*2], batch_size_fn=batch_size_fn, sort_within_batch=True,
             device=device, **kwargs)
 
 
