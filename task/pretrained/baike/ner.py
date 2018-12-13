@@ -471,7 +471,7 @@ class FineConfig:
         self.vocab_size = 100
         self.embedding_size = 256
         self.encoder_size = 256
-        self.attention_num_heads = 8
+        self.attention_num_heads = None
         self.encoder_depth = 2
 
         self.device = torch.device('cpu') # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
