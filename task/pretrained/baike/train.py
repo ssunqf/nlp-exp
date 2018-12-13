@@ -1,34 +1,26 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
 
-import collections
-import os
-import json
-import time
-import random
 import argparse
+import collections
+import json
+import os
+import random
+import time
 from typing import Dict, Tuple
 
 import torch
-from torch import nn, optim
-from tqdm import tqdm
-from torchtext.vocab import Vocab
-from torchtext import data
-from torchtext.data.iterator import BucketIterator
-
-from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN
-from .model import Model
-from .data import BaikeDataset, Field, LabelField, lazy_iter
-from .encoder import LSTMEncoder, StackLSTM
-from .classifier import LabelClassifier, PhraseClassifier
-
-from task.pretrained.transformer.attention import MultiHeadedAttention, TransformerLayer
-from ..transformer.transformer import Tagger, MaskedCRF, LinearCRF
-from ..transformer.field import PartialField
-from ..transformer import base
-from ..transformer.dataset import TaggerDataset
-
 from tensorboardX import SummaryWriter
+from torch import nn, optim
+from torchtext.vocab import Vocab
+from tqdm import tqdm
+
+from task.pretrained.transformer.attention import TransformerLayer
+from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN
+from .classifier import LabelClassifier, PhraseClassifier
+from .data import Field, LabelField, lazy_iter
+from .encoder import StackLSTM
+from .model import Model
 
 
 class Trainer:
@@ -37,7 +29,7 @@ class Trainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-6)
+        self.optimizer = optim.Adam(self.model.parameters(), 1e-3)
 
         self.dataset_it = dataset_it
 
@@ -352,7 +344,7 @@ class CoarseConfig:
         self.train_file = 'sentence.url'
 
         self.embedding_size = 128
-        self.encoder_size = 512
+        self.encoder_size = 256
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 

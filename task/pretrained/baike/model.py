@@ -1,23 +1,18 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
-import gzip
 import random
-from collections import Counter, defaultdict, OrderedDict
-from typing import List, Dict, Tuple, Set
+from collections import defaultdict
+from typing import List, Dict, Tuple
 
 import torch
 from torch import nn
 from torchtext import data
-from torchtext.data import Dataset
 from torchtext.vocab import Vocab
-from tqdm import tqdm
 
-
-from .base import Label, MASK_TOKEN
-from .encoder import LSTMEncoder
 from task.pretrained.transformer.attention import TransformerLayer
-from .classifier import LabelClassifier, PhraseClassifier
-from .preprocess import PhraseLabel
+from .base import MASK_TOKEN
+from .classifier import PhraseClassifier
+from .encoder import LSTMEncoder
 
 
 class Model(nn.Module):
@@ -44,7 +39,7 @@ class Model(nn.Module):
     def forward(self, data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
         text, lens = data.text
         phrases = self._collect_phrase(data)
-        text = self._mask_phrase(text, phrases)
+        text, phrases = self._mask_phrase(text, lens, phrases)
         masks = self._make_masks(text, lens)
         hidden = self.encoder(self.embedding(text), masks)
         if self.transformer:
@@ -57,6 +52,7 @@ class Model(nn.Module):
             losses[classifier.name] = loss
 
         losses['phrase'] = self.phrase_classifier(hidden, masks, phrases)
+
         return losses, lens.size(0)
 
     def named_embeddings(self):
@@ -67,6 +63,9 @@ class Model(nn.Module):
     def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float]]], int]:
         text, lens = data.text
         masks = self._make_masks(text, lens)
+        phrases = self._collect_phrase(data)
+        text, phrases = self._mask_phrase(text, lens, phrases)
+
         hidden = self.encoder(self.embedding(text), masks)
         if self.transformer:
             hidden = self.transformer(hidden, masks, batch_first=False)
@@ -77,7 +76,6 @@ class Model(nn.Module):
             res = classifier.predict(hidden, masks, labels)
             results[classifier.name].extend(res)
 
-        phrases = self._collect_phrase(data)
         return results, self.phrase_classifier.predict(hidden, masks, phrases), lens.size(0)
 
     def list_phrase(self, data: data.Batch):
@@ -90,13 +88,21 @@ class Model(nn.Module):
 
         return phrases
 
-    def _mask_phrase(self, text: torch.Tensor, phrases: List[List[Tuple[int, int]]]) -> torch.Tensor:
+    def _mask_phrase(self, text: torch.Tensor, lens: torch.Tensor,
+                     phrases: List[List[Tuple[int, int]]]) -> Tuple[torch.Tensor, List[List[Tuple[int, int]]]]:
+        no_mask_phrases = []
         for bid, sphrases in enumerate(phrases):
+            sen_phrases = []
+            seq_len = lens[bid].item()
             for begin, end in sphrases:
-                if random.random() < self.phrase_mask_prob:
+                if random.random() < self.phrase_mask_prob and seq_len > 7 and (end - begin) < seq_len - 2:
                     text[begin:end, bid] = self.mask_token_id
+                else:
+                    sen_phrases.append((begin, end))
 
-        return text
+            no_mask_phrases.append(sen_phrases)
+
+        return text, no_mask_phrases
 
     def _collect_phrase(self,
                         data: data.Batch):
@@ -110,8 +116,7 @@ class Model(nn.Module):
         phrases = [list(s) for s in phrases]
         return phrases
 
-    def _make_masks(self,
-                    sens: torch.Tensor,
+    def _make_masks(self, sens: torch.Tensor,
                     lens: torch.Tensor) -> torch.Tensor:
         masks = torch.ones(sens.size(), dtype=torch.uint8, device=sens.device)
         for i, l in enumerate(lens):

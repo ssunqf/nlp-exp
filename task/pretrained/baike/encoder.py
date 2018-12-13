@@ -12,7 +12,7 @@ from .base import get_dropout_mask
 
 class LSTMEncoder(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, hidden_layer: int,
-                 dropout: float=0.5):
+                 dropout: float=0.3):
         super(LSTMEncoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -37,7 +37,7 @@ class LSTMEncoder(nn.Module):
 
 
 class LSTMCell(nn.Module):
-    def __init__(self, input_size, hidden_size, go_forward: bool, recurrent_dropout=0.5):
+    def __init__(self, input_size, hidden_size, go_forward: bool, recurrent_dropout=0.3):
         super(LSTMCell, self).__init__()
         self.cell = nn.LSTMCell(input_size, hidden_size)
         self.input_size = input_size
@@ -108,7 +108,7 @@ class StackLSTM(nn.Module):
     def __init__(self,
                  input_size: int, hidden_size: int, num_layers: int,
                  residual=False,
-                 dropout=0.5):
+                 dropout=0.3):
         super(StackLSTM, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
