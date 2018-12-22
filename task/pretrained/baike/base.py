@@ -30,9 +30,10 @@ class PhraseLabel:
         self.labels = {k: np.array(v, dtype=np.str) for k, v in kwargs.items()}
 
     def to_json(self):
-        return json.dumps(
-            {'begin': self.begin, 'end': self.end, 'labels': {k:v.tolist() for k, v in self.labels.items()}},
-            ensure_ascii=False)
+        data = {'begin': self.begin, 'end': self.end}
+        if len(self.labels) > 0:
+            data['labels'] = {k:v.tolist() for k, v in self.labels.items()}
+        return json.dumps(data, ensure_ascii=False)
 
     def to_np(self):
         return self.begin, self.end, self.labels['keys'] #, self.labels['attrs'], self.labels['subtitles']
@@ -50,7 +51,10 @@ class PhraseLabel:
     @staticmethod
     def from_json(s: str):
         attr = json.loads(s)
-        return PhraseLabel(attr['begin'], attr['end'], **attr['labels'])
+        if 'labels' in attr:
+            return PhraseLabel(attr['begin'], attr['end'], **attr['labels'])
+        else:
+            return PhraseLabel(attr['begin'], attr['end'])
 
 
 def get_dropout_mask(prob: float, tensor_to_mask: torch.Tensor):

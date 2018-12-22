@@ -14,7 +14,8 @@ from tqdm import tqdm
 from task.util import utils
 from .base import PhraseLabel, mixed_open
 
-LINK_PREFIX = 'link::'
+# LINK_PREFIX = 'link::'
+LINK_PREFIX = ''
 ATTR_PREFIX = 'attr::'
 prefix = 'https://baike.baidu.com/item'
 
@@ -124,6 +125,7 @@ class Labeler:
         self.key_counter = Counter()
         self.attr_counter = Counter()
         self.subtitle_counter = Counter()
+        self.entity_counter = Counter()
         self.entities = entities
         self.key_voc = key_voc
         self.attr_voc = attr_voc
@@ -131,14 +133,16 @@ class Labeler:
 
     def label(self, sentence: str):
         words, labels = [], []
-        for phrase in split(sentence):
+        for phrase in split(sentence.strip()):
             if isinstance(phrase, str):
-                words.extend(w for t, w in utils.replace_entity(phrase))
+                # words.extend(w for t, w in utils.replace_entity(phrase))
+                words.extend(phrase)
             elif isinstance(phrase, tuple):
                 assert len(phrase) == 2
                 name, info = phrase
                 begin = len(words)
-                words.extend(w for t, w in utils.replace_entity(name))
+                # words.extend(w for t, w in utils.replace_entity(name))
+                words.extend(name)
                 end = len(words)
                 if info.startswith(LINK_PREFIX):
                     url = info[len(LINK_PREFIX) + len(prefix):]
@@ -151,8 +155,9 @@ class Labeler:
                         self.key_counter.update(keys)
                         self.attr_counter.update(attrs)
                         self.subtitle_counter.update(subtitles)
-                        labels.append(PhraseLabel(begin, end, keys=keys, attrs=attrs, subtitles=subtitles))
-                    else:
+                        self.entity_counter.update([url])
+                        labels.append(PhraseLabel(begin, end, keys=keys, attrs=attrs, subtitles=subtitles, entity=[url]))
+                    elif len(name) > 1:
                         labels.append(PhraseLabel(begin, end))
                 elif info.startswith(ATTR_PREFIX):
                     attr_name = info[len(ATTR_PREFIX):]
@@ -228,7 +233,7 @@ if __name__ == '__main__':
                     words, labels = labeler.label(line)
                     if len(labels) > 0:
                         output.write('%s\t\t%s\n' % (
-                            ' '.join(words),
+                            ''.join(words),
                             '\t\t'.join(l.to_json() for l in labels)))
 
     save_counter(os.path.join(args.output, 'text.voc.gz'), labeler.text_counter)
@@ -238,3 +243,5 @@ if __name__ == '__main__':
     save_counter(os.path.join(args.output, 'attr.voc.gz'), labeler.attr_counter)
 
     save_counter(os.path.join(args.output, 'subtitle.voc.gz'), labeler.subtitle_counter)
+
+    save_counter(os.path.join(args.output, 'entity.voc.gz'), labeler.entity_counter)

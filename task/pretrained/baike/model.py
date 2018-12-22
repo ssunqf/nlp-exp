@@ -104,8 +104,7 @@ class Model(nn.Module):
 
         return text, no_mask_phrases
 
-    def _collect_phrase(self,
-                        data: data.Batch):
+    def _collect_phrase(self, data: data.Batch):
         text, lens = data.text
         phrases = [set() for _ in range(lens.size(0))]
         for classifier in self.label_classifiers:

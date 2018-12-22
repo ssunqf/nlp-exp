@@ -47,7 +47,7 @@ class LabelField(Field):
                        phrase.end + 1,
                        torch.tensor(
                            list(filter(lambda x: x != 0,
-                                       [self.vocab.stoi[label] for label in phrase.labels[self.name]])),
+                                       [self.vocab.stoi[label] for label in phrase.labels[self.name]] if self.name in phrase.labels else [])),
                            dtype=torch.long,
                            device=device)) for phrase in phrases] for phrases in batch]
 
@@ -62,12 +62,16 @@ class BaikeDataset(Dataset):
         with gzip.open(path, mode='rt', compresslevel=6) as file:
             for line in tqdm(file, desc=('load dataset from %s' % path)):
                 words, *labels = line.split('\t\t')
-                words = words.split(' ')
+                # words = words.split(' ')
+                words = list(words)
                 labels = [PhraseLabel.from_json(label) for label in labels]
                 if len(labels) > 0 and len(words) < 300:
                     words = np.array(words, dtype=np.str)
                     # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                     examples.append(data.Example.fromlist([words, labels], fields))
+
+                if len(examples) > 300000:
+                    break
 
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
