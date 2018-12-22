@@ -1,5 +1,6 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
+
 import os
 import random
 import time
@@ -7,6 +8,7 @@ from collections import defaultdict, OrderedDict, deque, Counter
 from typing import List, Tuple, Dict
 from tqdm import tqdm
 import argparse
+
 
 import torch
 from torch import nn, optim
@@ -18,6 +20,7 @@ from ..transformer.vocab import TagVocab
 from ..transformer.field import PartialField
 from .train import Trainer, CoarseConfig
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN
+from .embedding import WindowEmbedding
 
 from tensorboardX import SummaryWriter
 
@@ -41,7 +44,7 @@ class NamedEntityData(data.Dataset):
                     yield chars, types
                     chars, types = [], []
                 else:
-                    char, type = line.split()
+                    char, type = line.rsplit(maxsplit=1)
                     chars.append(char)
                     types.append(type)
 
@@ -138,7 +141,7 @@ class Tagger(nn.Module):
                     if tag == 'E_O' or tag == 'S_O':
                         yield word + ' '
                     elif tag == 'B_O':
-                        yield word
+                        yield word + ' '
                     elif tag.startswith('B_'):
                         yield '[[%s' % (word)
                     elif tag.startswith('E_'):
@@ -198,7 +201,8 @@ class Tagger(nn.Module):
 
         return results
 
-    def evaluation_one(self, preds: List[str], golds: List[str]) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+    def evaluation_one(self, preds: List[str],
+                       golds: List[str]) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
         assert len(preds) == len(golds)
         correct_counts = defaultdict(float)
         gold_counts = defaultdict(float)
@@ -240,7 +244,8 @@ class Tagger(nn.Module):
             #print(gold_tags)
             for i in range(len(text_len)):
                 pred, score = preds[i]
-                _correct_counts, _gold_counts, _pred_counts = self.evaluation_one([self.tags.itos[p] for p in pred[1:-1]], golds[i][1:text_len[i]-1])
+                _correct_counts, _gold_counts, _pred_counts = self.evaluation_one(
+                    [self.tags.itos[p] for p in pred[1:-1]], golds[i][1:text_len[i]-1])
 
                 correct_counts.update(_correct_counts)
                 gold_counts.update(_gold_counts)
@@ -277,7 +282,6 @@ class FineTrainer:
         self.config = config
         self.model = model
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
-        # self.shared_optimizer = optim.Adam(list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()), lr=1e-5)
 
         self.train_it, self.valid_it, self.test_it = \
             partial_train_it, partial_valid_it, partial_test_it
@@ -310,12 +314,6 @@ class FineTrainer:
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 
-    def _model_training(self, all=False):
-        if all is False:
-            self.model.embedding.eval()
-            self.model.encoder.eval()
-        self.model.crf.train()
-
     def train_one(self, batch, scale) -> Tuple[float, int]:
         self.model.train()
         self.model.zero_grad()
@@ -328,7 +326,7 @@ class FineTrainer:
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
         self.optimizer.step()
-        # self.shared_optimizer.step()
+
         return rloss, num_sen
 
     def valid(self, valid_it) -> Tuple[torch.Tensor, float]:
@@ -399,8 +397,8 @@ class FineTrainer:
     @classmethod
     def create(cls, coarse_config, checkpoint, fine_config):
         if checkpoint is not None:
-            TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL = Trainer.load_voc(coarse_config)
-            model = Trainer.load_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL)
+            TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL = Trainer.load_voc(coarse_config)
+            model = Trainer.load_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
             states = torch.load(checkpoint)
             model.load_state_dict(states['model'])
             embedding, encoder = model.embedding, model.encoder
@@ -432,7 +430,7 @@ class FineTrainer:
         if checkpoint is None:
             embedding = nn.Embedding(len(TEXT.vocab), coarse_config.embedding_size)
             encoder = StackLSTM(coarse_config.embedding_size, coarse_config.encoder_size,
-                            coarse_config.encoder_num_layers, residual=False, dropout=0.2)
+                                coarse_config.encoder_num_layers, residual=False, dropout=0.2)
         crf = MaskedCRF(coarse_config.encoder_size,
                         len(tag_field.vocab),
                         tag_field.vocab.transition_constraints,
@@ -469,9 +467,9 @@ class FineConfig:
 
         # model
         self.vocab_size = 100
-        self.embedding_size = 256
+        self.embedding_size = 128
         self.encoder_size = 256
-        self.attention_num_heads = None
+        self.attention_num_heads = 8
         self.encoder_depth = 2
 
         self.device = torch.device('cpu') # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -484,8 +482,7 @@ class FineConfig:
         self.summary_dir = os.path.join('./ner/attention', 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.valid_step = 200
-
+        self.valid_step = 100
 
 
 if __name__ == '__main__':

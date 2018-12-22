@@ -234,7 +234,7 @@ class LatticeLayer(nn.Module):
         values = torch.cat([v for _, _, v, _ in qkvm if v is not None], dim=-2)
         masks = torch.cat([m for _, _, _, m in qkvm if m is not None], dim=-1)
 
-        weights = (querys * keys).sum(-1).masked_fill_(masks, -1e10).softmax(-1)
+        weights = (querys * keys).sum(-1).masked_fill(masks, -1e10).softmax(-1)
 
         return torch.matmul(weights.unsqueeze(-2), values).squeeze(-2)
 
@@ -358,7 +358,7 @@ class GatedLatticeLayer(nn.Module):
 
         scores = torch.matmul(query.unsqueeze(-2), keys.transpose(-1, -2)).squeeze(-2)
 
-        scores.masked_fill_(masks, -1e10)
+        scores = scores.masked_fill(masks, -1e10)
 
         weights = scores.softmax(-1)
 

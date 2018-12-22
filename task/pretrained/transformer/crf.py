@@ -7,6 +7,29 @@ from .base import MIN_SCORE
 from .attention import MultiHeadedAttention, TransformerLayer
 
 
+class EmissionLayer(nn.Module):
+    def __init__(self, in_size: int, out_size: int, kernel_size: int=1, dropout=0.3):
+        super(EmissionLayer, self).__init__()
+        assert kernel_size % 2 == 1
+
+        self.model = nn.Sequential(
+            nn.BatchNorm1d(in_size),
+            nn.Conv1d(in_size, in_size, kernel_size, padding=kernel_size//2),
+            nn.ReLU(),
+            nn.BatchNorm1d(in_size),
+            nn.Conv1d(in_size, out_size, kernel_size=1)
+        )
+
+    def forward(self, input: torch.Tensor, batch_first=False):
+        input = input.permute(0, 2, 1) if batch_first else input.permute(1, 2, 0)
+
+        output = self.model(input)
+
+        output = output.permute(0, 2, 1) if batch_first else output.permute(2, 0, 1)
+
+        return output
+
+
 class LinearCRF(nn.Module):
     def __init__(self, hidden_size, num_tags, attention_num_heads=None, dropout=0.3):
         super(LinearCRF, self).__init__()
@@ -17,8 +40,10 @@ class LinearCRF(nn.Module):
         self.hidden2emission = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.Sigmoid(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_size, num_tags)
         )
+
         self._transition = nn.Parameter(torch.randn(num_tags, num_tags))
         self.hidden_size = hidden_size
         self.num_tags = num_tags
@@ -36,7 +61,7 @@ class LinearCRF(nn.Module):
         max_len, batch_size, emission_size = emissions.size()
         assert emission_size == self.num_tags
 
-        transition = self.transition.unsqueeze(0).expand(batch_size, -1, -1)
+        transition = self._transition.unsqueeze(0).expand(batch_size, -1, -1)
         forward_0 = emissions[0]
 
         forward_vars = [forward_0]
@@ -149,8 +174,6 @@ class LinearCRF(nn.Module):
             beams.append(beam_t)
 
         last = sorted([node for curr_tag in beams[-1] for node in curr_tag], key=lambda n: n.score, reverse=True)[0:topk]
-
-        print(last)
 
         paths = []
         scores = []

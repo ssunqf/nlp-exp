@@ -293,7 +293,7 @@ class Config:
     vocab_size = 100
     embedding_dim = 512
     encoder_dim = 512
-    attention_num_head = 8
+    attention_num_head = None
     encoder_depth = 2
 
     use_cuda = torch.cuda.is_available()

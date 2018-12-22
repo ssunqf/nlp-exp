@@ -16,7 +16,8 @@ from torchtext.vocab import Vocab
 from tqdm import tqdm
 
 from task.pretrained.transformer.attention import TransformerLayer
-from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN
+from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
+from .embedding import WindowEmbedding
 from .classifier import LabelClassifier, PhraseClassifier
 from .data import Field, LabelField, lazy_iter
 from .encoder import StackLSTM
@@ -29,7 +30,7 @@ class Trainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), 1e-3)
+        self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-6)
 
         self.dataset_it = dataset_it
 
@@ -227,12 +228,13 @@ class Trainer:
                         total_batch, start = 1e-10, time.time()
                         label_losses = collections.defaultdict(float)
 
-                    if num_iterations % (self.valid_step * 5) == 0:
+                    if num_iterations % (self.valid_step * 1) == 0:
                         for tag, mat, metadata in self.model.named_embeddings():
                             if len(metadata) > self.config.projector_max_size:
                                 half_size = self.config.projector_max_size // 2
                                 mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
                                 metadata = metadata[:half_size] + metadata[-half_size:]
+                            metadata = ['\\s' if tok == ' ' else tok for tok in metadata]
                             self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
 
                     if train_it.iterations % (self.valid_step) == 0:
@@ -262,21 +264,25 @@ class Trainer:
 
     @staticmethod
     def load_voc(config):
-        TEXT = Field(mask_token=MASK_TOKEN, include_lengths=True, init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
+        TEXT = Field(mask_token=MASK_TOKEN, include_lengths=True,
+                     init_token=INIT_TOKEN, eos_token=EOS_TOKEN, pad_token=PAD_TOKEN, unk_token=UNK_TOKEN)
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
+        ENTITY_LABEL = LabelField('entity')
         TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), max_size=50000, min_freq=100)
         KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), max_size=150000, min_freq=100)
         ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), max_size=150000, min_freq=100)
         SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), max_size=150000, min_freq=100)
+        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'), max_size=100000, min_freq=50)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
         print('attr vocab size = %d' % len(ATTR_LABEL.vocab))
         print('subtitle vocab size = %d' % len(SUB_LABEL.vocab))
+        print('entity vocab size = %d' % len(ENTITY_LABEL.vocab))
 
-        return TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL
+        return TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL
 
     @staticmethod
     def load_dataset(config, fields):
@@ -294,9 +300,10 @@ class Trainer:
         return dataset_it
 
     @staticmethod
-    def load_model(config, text_field, key_field, attr_field, sub_field):
+    def load_model(config, text_field, key_field, attr_field, sub_field, entity_field):
 
-        embedding = nn.Embedding(len(text_field.vocab), config.embedding_size)
+        embedding = nn.Embedding(len(text_field.vocab), config.embedding_size,
+                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
         encoder = StackLSTM(config.embedding_size,
                             config.encoder_size, config.encoder_num_layers,
@@ -307,7 +314,7 @@ class Trainer:
 
         label_classifiers = nn.ModuleList([
             LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
-            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field)]])
+            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_size)
         model = Model(text_field.vocab, embedding,
                       encoder, transformer,
@@ -319,9 +326,9 @@ class Trainer:
 
     @classmethod
     def create(cls, config, checkpoint=None):
-        TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL = cls.load_voc(config)
+        TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL = cls.load_voc(config)
 
-        fields = [('text', TEXT), (('keys', 'attrs', 'subtitles'), (KEY_LABEL, ATTR_LABEL, SUB_LABEL))]
+        fields = [('text', TEXT), (('keys', 'attrs', 'subtitles', 'entity'), (KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL))]
 
         # train_it, valid_it = BaikeDataset.iters(
         #    fields, path=config.root, train=config.train_file, device=config.device)
@@ -329,9 +336,10 @@ class Trainer:
 
         dataset_it = cls.load_dataset(config, fields)
 
-        model = cls.load_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL)
+        model = cls.load_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
         trainer = cls(config, model, dataset_it,
-            TEXT.vocab, {'keys': KEY_LABEL.vocab, 'attrs': ATTR_LABEL.vocab, 'subtitles': SUB_LABEL.vocab},
+            TEXT.vocab,
+            {'keys': KEY_LABEL.vocab, 'attrs': ATTR_LABEL.vocab, 'subtitles': SUB_LABEL.vocab, 'entity': ENTITY_LABEL.vocab},
             config.valid_step, config.checkpoint_dir)
         if checkpoint:
             trainer.load_checkpoint(checkpoint)
@@ -340,8 +348,8 @@ class Trainer:
 
 class CoarseConfig:
     def __init__(self, output_dir=None):
-        self.root = './baike/preprocess4'
-        self.train_file = 'sentence.url'
+        self.root = './baike/preprocess-char'
+        self.train_file = 'entity.sentence'
 
         self.embedding_size = 128
         self.encoder_size = 256
@@ -350,9 +358,9 @@ class CoarseConfig:
 
         self.label_size = 128
 
-        self.phrase_mask_prob = 0.2
+        self.phrase_mask_prob = 0.3
 
-        self.valid_step = 2000
+        self.valid_step = 1000
 
         self.batch_size = 16
 
