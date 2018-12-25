@@ -230,7 +230,7 @@ class Trainer:
                         total_batch, start = 1e-10, time.time()
                         label_losses = collections.defaultdict(float)
 
-                    if num_iterations % (self.valid_step * 1) == 0:
+                    if num_iterations % (self.valid_step * 5) == 0:
                         for tag, mat, metadata in self.model.named_embeddings():
                             if len(metadata) > self.config.projector_max_size:
                                 half_size = self.config.projector_max_size // 2
@@ -413,7 +413,7 @@ class Trainer:
 class Config:
     def __init__(self, output_dir=None):
         self.root = './baike/preprocess-char'
-        self.train_file = 'entity.sentence'
+        self.train_file = 'entity.url'
 
         self.voc_max_size = 50000
         self.voc_min_freq = 50
@@ -431,7 +431,7 @@ class Config:
         self.encoder_hidden_dim = 128
         self.encoder_cell_dim = 256
         self.encoder_num_layers = 2
-        self.attention_num_heads = 8
+        self.attention_num_heads = None
 
         self.label_dim = 128
 
