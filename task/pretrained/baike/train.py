@@ -18,10 +18,12 @@ from tqdm import tqdm
 from task.pretrained.transformer.attention import TransformerLayer
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
 from .embedding import WindowEmbedding
-from .classifier import LabelClassifier, PhraseClassifier
+from .classifier import LabelClassifier, ContextClassifier, PhraseClassifier, LMClassifier
 from .data import Field, LabelField, lazy_iter
-from .encoder import StackLSTM
+from .encoder import StackLSTM, ElmoEncoder
 from .model import Model
+
+from .transformer import Embeddings, Transformer
 
 
 class Trainer:
@@ -234,7 +236,7 @@ class Trainer:
                                 half_size = self.config.projector_max_size // 2
                                 mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
                                 metadata = metadata[:half_size] + metadata[-half_size:]
-                            metadata = ['\\s' if tok == ' ' else tok for tok in metadata]
+                            metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
                             self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
 
                     if train_it.iterations % (self.valid_step) == 0:
@@ -274,7 +276,7 @@ class Trainer:
         KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), max_size=150000, min_freq=100)
         ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), max_size=150000, min_freq=100)
         SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), max_size=150000, min_freq=100)
-        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'), max_size=100000, min_freq=50)
+        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'), max_size=150000, min_freq=50)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
@@ -299,14 +301,14 @@ class Trainer:
                                device=config.device)
         return dataset_it
 
-    @staticmethod
-    def load_model(config, text_field, key_field, attr_field, sub_field, entity_field):
+    @classmethod
+    def load_lstm_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
 
-        embedding = nn.Embedding(len(text_field.vocab), config.embedding_size,
+        embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
                                     padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
         encoder = StackLSTM(config.embedding_size,
-                            config.encoder_size, config.encoder_num_layers,
+                            config.encoder_hidden_dim, config.encoder_cell_dim, config.encoder_num_layers,
                             residual=False, dropout=0.5)
 
         transformer = None if config.attention_num_heads is None \
@@ -325,6 +327,52 @@ class Trainer:
         return model
 
     @classmethod
+    def load_trans_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
+        embedding = Embeddings(len(text_field.vocab), config.embedding_dim,
+                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+
+        encoder = Transformer.create(
+            config.encoder_size, config.attention_num_heads, config.encoder_num_layers, dropout=0.5)
+
+        label_classifiers = nn.ModuleList([
+            LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
+            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
+        phrase_classifier = PhraseClassifier(config.encoder_size)
+        model = Model(text_field.vocab, embedding,
+                      encoder, None,
+                      label_classifiers, phrase_classifier, config.phrase_mask_prob)
+
+        model.to(config.device)
+
+        return model
+
+    @classmethod
+    def load_elmo_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
+
+        embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
+                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+
+        encoder = ElmoEncoder(config.embedding_dim,
+                              config.encoder_hidden_dim,
+                              config.encoder_cell_dim,
+                              config.encoder_num_layers,
+                              dropout=0.5)
+
+        lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
+                                     embedding.weight, padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+        label_classifiers = nn.ModuleList([
+            ContextClassifier(name, field.vocab, config.encoder_hidden_dim, config.label_dim)
+            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
+        phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
+        model = Model(text_field.vocab, embedding,
+                      encoder, None, lm_classifier,
+                      label_classifiers, phrase_classifier, config.phrase_mask_prob)
+
+        model.to(config.device)
+
+        return model
+
+    @classmethod
     def create(cls, config, checkpoint=None):
         TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL = cls.load_voc(config)
 
@@ -336,7 +384,13 @@ class Trainer:
 
         dataset_it = cls.load_dataset(config, fields)
 
-        model = cls.load_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+        if config.encoder_mode.lower() == 'lstm':
+            model = cls.load_lstm_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+        elif config.encoder_mode.lower() == 'elmo':
+            model = cls.load_elmo_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+        else:
+            config.load_trans_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+
         trainer = cls(config, model, dataset_it,
             TEXT.vocab,
             {'keys': KEY_LABEL.vocab, 'attrs': ATTR_LABEL.vocab, 'subtitles': SUB_LABEL.vocab, 'entity': ENTITY_LABEL.vocab},
@@ -346,21 +400,23 @@ class Trainer:
         return trainer
 
 
-class CoarseConfig:
+class Config:
     def __init__(self, output_dir=None):
         self.root = './baike/preprocess-char'
         self.train_file = 'entity.sentence'
 
-        self.embedding_size = 128
-        self.encoder_size = 256
+        self.embedding_dim = 128
+        self.encoder_mode = 'elmo'  # ['lstm', 'elmo', 'transformer']
+        self.encoder_hidden_dim = 128
+        self.encoder_cell_dim = 256
         self.encoder_num_layers = 2
-        self.attention_num_heads = None
+        self.attention_num_heads = 8
 
-        self.label_size = 128
+        self.label_dim = 128
 
-        self.phrase_mask_prob = 0.3
+        self.phrase_mask_prob = 0.0
 
-        self.valid_step = 1000
+        self.valid_step = 2000
 
         self.batch_size = 16
 
@@ -373,14 +429,13 @@ class CoarseConfig:
         os.makedirs(self.summary_dir, exist_ok=True)
         self.projector_max_size = 20000
 
-        self.classifier_loss = 'softmax' # ['softmax', 'negativesample', 'adaptivesoftmax]
-
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # save config
         with open(os.path.join(self.root, self.dir_prefix, 'config.txt'), 'wt') as file:
             file.write(json.dumps({name: param for name, param in self.__dict__.items() if name not in {'device'}},
                                   ensure_ascii=False, indent=2))
+
 
 
 if __name__ == '__main__':
@@ -390,6 +445,6 @@ if __name__ == '__main__':
 
     args = argparser.parse_args()
 
-    trainer = Trainer.create(CoarseConfig(args.output), args.checkpoint)
+    trainer = Trainer.create(Config(args.output), args.checkpoint)
 
     trainer.train()
