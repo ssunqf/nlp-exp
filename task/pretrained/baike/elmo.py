@@ -20,7 +20,6 @@ def get_dropout_mask(prob: float, tensor_to_mask: torch.Tensor):
     mask = torch.rand(tensor_to_mask.size(), device=tensor_to_mask.device) > prob
     return mask.float().div(1 - prob)
 
-
 class LSTMLayer(nn.Module):
     def __init__(self, input_size, hidden_size, go_forward: bool, dropout=0.2):
         super(LSTMLayer, self).__init__()

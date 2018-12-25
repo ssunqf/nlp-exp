@@ -14,11 +14,11 @@ import torch
 from torch import nn, optim
 from torchtext import data, vocab
 from torchtext.data.iterator import BucketIterator
-from .encoder import StackLSTM
+from .encoder import StackLSTM, ElmoEncoder
 from ..transformer.crf import LinearCRF, MaskedCRF
 from ..transformer.vocab import TagVocab
 from ..transformer.field import PartialField
-from .train import Trainer, CoarseConfig
+from .train import Trainer, Config
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN
 from .embedding import WindowEmbedding
 
@@ -78,12 +78,13 @@ class NamedEntityData(data.Dataset):
 
 class Tagger(nn.Module):
     def __init__(self, words: vocab.Vocab, tags: TagVocab,
-                 embedding: nn.Embedding, encoder: StackLSTM, crf: LinearCRF):
+                 embedding: nn.Embedding, elmo_encoder: ElmoEncoder, encoder: StackLSTM, crf: LinearCRF):
         super(Tagger, self).__init__()
         self.words = words
         self.tags = tags
 
         self.embedding = embedding
+        self.elmo_encoder = elmo_encoder
         self.encoder = encoder
         self.crf = crf
 
@@ -95,12 +96,12 @@ class Tagger(nn.Module):
 
     def _encode(self, batch: data.Batch):
         sens, lens = batch.text
-        token_masks = self._make_masks(sens, lens)
-        emb = self.embedding(sens)
-        if hasattr(batch, 'lattices'):
-            return self.encoder(emb, token_masks, batch.lattices), token_masks
-        else:
-            return self.encoder(emb, token_masks), token_masks
+        with torch.no_grad():
+            token_masks = self._make_masks(sens, lens)
+            emb = self.embedding(sens)
+            if self.elmo_encoder:
+                emb = self.elmo_encoder(emb, lens)
+        return self.encoder(emb, lens), token_masks
 
     def predict(self, batch: data.Batch):
         sens, lens = batch.text
@@ -265,13 +266,8 @@ class Tagger(nn.Module):
 
         return results
 
-    def coarse_params(self):
-        yield from self.embedding.parameters()
+    def parameters(self):
         yield from self.encoder.parameters()
-        yield from self.crf.parameters()
-
-    def fine_params(self):
-        yield from self.embedding.parameters()
         yield from self.crf.parameters()
 
 
@@ -281,7 +277,7 @@ class FineTrainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=5e-6)
 
         self.train_it, self.valid_it, self.test_it = \
             partial_train_it, partial_valid_it, partial_test_it
@@ -398,13 +394,13 @@ class FineTrainer:
     def create(cls, coarse_config, checkpoint, fine_config):
         if checkpoint is not None:
             TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL = Trainer.load_voc(coarse_config)
-            model = Trainer.load_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+            model = Trainer.load_elmo_model(coarse_config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
             states = torch.load(checkpoint)
             model.load_state_dict(states['model'])
-            embedding, encoder = model.embedding, model.encoder
+            embedding, elmo_encoder = model.embedding, model.encoder
         else:
             TEXT = data.Field(include_lengths=True, init_token=INIT_TOKEN, eos_token=EOS_TOKEN, pad_token=PAD_TOKEN)
-            embedding, encoder = None, None
+            embedding, elmo_encoder = None, None
 
         tag_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
         train, valid, test = NamedEntityData.splits(
@@ -429,13 +425,16 @@ class FineTrainer:
 
         if checkpoint is None:
             embedding = nn.Embedding(len(TEXT.vocab), coarse_config.embedding_size)
-            encoder = StackLSTM(coarse_config.embedding_size, coarse_config.encoder_size,
-                                coarse_config.encoder_num_layers, residual=False, dropout=0.2)
-        crf = MaskedCRF(coarse_config.encoder_size,
+
+        encoder = StackLSTM(coarse_config.encoder_hidden_dim * 2,
+                            fine_config.encoder_hidden_dim, fine_config.encoder_cell_dim,
+                            fine_config.encoder_num_layers, residual=False, dropout=0.2)
+
+        crf = MaskedCRF(fine_config.encoder_hidden_dim,
                         len(tag_field.vocab),
                         tag_field.vocab.transition_constraints,
                         fine_config.attention_num_heads)
-        fine_model = Tagger(TEXT.vocab, tag_field.vocab, embedding, encoder, crf)
+        fine_model = Tagger(TEXT.vocab, tag_field.vocab, embedding, elmo_encoder, encoder, crf)
 
         fine_model.to(fine_config.device)
 
@@ -467,16 +466,18 @@ class FineConfig:
 
         # model
         self.vocab_size = 100
-        self.embedding_size = 128
-        self.encoder_size = 256
-        self.attention_num_heads = 8
-        self.encoder_depth = 2
+        self.embedding_dim = 128
+        self.encoder_hidden_dim = 256
+        self.encoder_cell_dim = 256
+        self.encoder_num_layers = 2
+        self.attention_num_heads = None
+        self.encoder_depth = 1
 
         self.device = torch.device('cpu') # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         self.cached_dataset_prefix = './ner/dataset'
         self.checkpoint_path = './ner/attention/model/mode_{}_emb_{}_hidden_{}_layer_{}_head_{}'.format(
-            'lstm', self.embedding_size, self.encoder_size, self.encoder_depth, self.attention_num_heads)
+            'lstm', self.embedding_dim, self.encoder_hidden_dim, self.encoder_depth, self.attention_num_heads)
 
         # summary parameters
         self.summary_dir = os.path.join('./ner/attention', 'summary')
@@ -491,7 +492,7 @@ if __name__ == '__main__':
 
     args = argparser.parse_args()
 
-    trainer = FineTrainer.create(CoarseConfig(), args.checkpoint, FineConfig())
+    trainer = FineTrainer.create(Config(), args.checkpoint, FineConfig())
 
     trainer.train()
 

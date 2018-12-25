@@ -3,8 +3,8 @@
 
 import torch
 
-from .train import CoarseConfig, Trainer
+from .train import Config, Trainer
 
 
 if __name__ == '__main__':
-    trainer = Trainer.create(CoarseConfig())
+    trainer = Trainer.create(Config())

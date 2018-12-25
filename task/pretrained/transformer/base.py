@@ -81,12 +81,12 @@ def get_act_func(name: str):
 # ------------------------------------------------------
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
-    def __init__(self, size: int, activation: nn.Module=nn.ReLU(), dropout=0.3):
+    def __init__(self, size: int, dropout=0.3):
         super(PositionwiseFeedForward, self).__init__()
         self.model = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(size, size),
-            activation,
+            nn.ReLU(),
             nn.Linear(size, size))
 
     def forward(self, input):

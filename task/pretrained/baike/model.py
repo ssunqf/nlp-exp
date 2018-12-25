@@ -10,17 +10,18 @@ from torchtext import data
 from torchtext.vocab import Vocab
 
 from task.pretrained.transformer.attention import TransformerLayer
-from .base import MASK_TOKEN
-from .classifier import PhraseClassifier
-from .encoder import LSTMEncoder
+from .base import MASK_TOKEN, make_masks
+from .classifier import PhraseClassifier, LMClassifier
+from .encoder import Encoder
 
 
 class Model(nn.Module):
     def __init__(self,
                  text_voc: Vocab,
                  embedding: nn.Embedding,
-                 encoder: LSTMEncoder,
+                 encoder: Encoder,
                  transformer: TransformerLayer,
+                 lm_classifier: LMClassifier,
                  label_classifiers: nn.ModuleList,
                  phrase_classifier: PhraseClassifier,
                  phrase_mask_prob: float):
@@ -31,6 +32,8 @@ class Model(nn.Module):
         self.embedding = embedding
         self.encoder = encoder
         self.transformer = transformer
+
+        self.lm_classifier = lm_classifier
         self.label_classifiers = label_classifiers
         self.phrase_classifier = phrase_classifier
 
@@ -40,8 +43,8 @@ class Model(nn.Module):
         text, lens = data.text
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
-        masks = self._make_masks(text, lens)
-        hidden = self.encoder(self.embedding(text), masks)
+        masks = make_masks(text, lens)
+        hidden = self.encoder(self.embedding(text), lens)
         if self.transformer:
             hidden = self.transformer(hidden, masks, batch_first=False)
 
@@ -53,20 +56,24 @@ class Model(nn.Module):
 
         losses['phrase'] = self.phrase_classifier(hidden, masks, phrases)
 
+        if self.lm_classifier is not None:
+            losses['lm'] = self.lm_classifier(hidden, text)
+
         return losses, lens.size(0)
 
     def named_embeddings(self):
-        yield 'voc', self.embedding.weight, self.text_voc.itos
+        if isinstance(self.embedding, nn.Embedding):
+            yield 'voc', self.embedding.weight, self.text_voc.itos
         for classifier in self.label_classifiers:
             yield from classifier.named_embeddings()
 
     def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float]]], int]:
         text, lens = data.text
-        masks = self._make_masks(text, lens)
+        masks = make_masks(text, lens)
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
 
-        hidden = self.encoder(self.embedding(text), masks)
+        hidden = self.encoder(self.embedding(text), lens)
         if self.transformer:
             hidden = self.transformer(hidden, masks, batch_first=False)
 
@@ -80,8 +87,8 @@ class Model(nn.Module):
 
     def list_phrase(self, data: data.Batch):
         text, lens = data.text
-        masks = self._make_masks(text, lens)
-        hidden = self.encoder(self.embedding(text), masks)
+        masks = make_masks(text, lens)
+        hidden = self.encoder(self.embedding(text), lens)
         if self.transformer:
             hidden = self.transformer(hidden, masks, batch_first=False)
         phrases = self.phrase_classifier.find_phrase(hidden, masks)
@@ -114,13 +121,6 @@ class Model(nn.Module):
                     phrases[bid].add((label.begin, label.end))
         phrases = [list(s) for s in phrases]
         return phrases
-
-    def _make_masks(self, sens: torch.Tensor,
-                    lens: torch.Tensor) -> torch.Tensor:
-        masks = torch.ones(sens.size(), dtype=torch.uint8, device=sens.device)
-        for i, l in enumerate(lens):
-            masks[l:, i] = 0
-        return masks
 
 if __name__ == '__main__':
 

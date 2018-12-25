@@ -64,14 +64,14 @@ class BaikeDataset(Dataset):
                 words, *labels = line.split('\t\t')
                 # words = words.split(' ')
                 words = list(words)
-                labels = [PhraseLabel.from_json(label) for label in labels]
-                if len(labels) > 0 and len(words) < 300:
-                    words = np.array(words, dtype=np.str)
-                    # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
-                    examples.append(data.Example.fromlist([words, labels], fields))
-
-                if len(examples) > 300000:
-                    break
+                try:
+                    labels = [PhraseLabel.from_json(label) for label in labels]
+                    if len(labels) > 0 and len(words) < 300:
+                        words = np.array(words, dtype=np.str)
+                        # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
+                        examples.append(data.Example.fromlist([words, labels], fields))
+                except:
+                    pass
 
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
