@@ -272,11 +272,21 @@ class Trainer:
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
         ENTITY_LABEL = LabelField('entity')
-        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'), max_size=50000, min_freq=100)
-        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'), max_size=150000, min_freq=100)
-        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'), max_size=150000, min_freq=100)
-        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'), max_size=150000, min_freq=100)
-        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'), max_size=150000, min_freq=50)
+        TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'),
+                         max_size=config.voc_max_size,
+                         min_freq=config.voc_min_freq)
+        KEY_LABEL.build_vocab(os.path.join(config.root, 'key.voc.gz'),
+                              max_size=config.key_max_size,
+                              min_freq=config.key_min_freq)
+        ATTR_LABEL.build_vocab(os.path.join(config.root, 'attr.voc.gz'),
+                               max_size=config.attr_max_size,
+                               min_freq=config.attr_min_freq)
+        SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'),
+                              max_size=config.subtitle_max_size,
+                              min_freq=config.subtitle_min_freq)
+        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'),
+                                 max_size=config.entity_max_size,
+                                 min_freq=config.entity_min_freq)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
@@ -404,6 +414,17 @@ class Config:
     def __init__(self, output_dir=None):
         self.root = './baike/preprocess-char'
         self.train_file = 'entity.sentence'
+
+        self.voc_max_size = 50000
+        self.voc_min_freq = 50
+        self.key_max_size = 150000
+        self.key_min_freq = 50
+        self.subtitle_max_size = 150000
+        self.subtitle_min_freq = 50
+        self.attr_max_size = 150000
+        self.attr_min_freq = 50
+        self.entity_max_size = 150000
+        self.entity_min_freq = 50
 
         self.embedding_dim = 128
         self.encoder_mode = 'elmo'  # ['lstm', 'elmo', 'transformer']

@@ -277,7 +277,7 @@ class FineTrainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=5e-6)
 
         self.train_it, self.valid_it, self.test_it = \
             partial_train_it, partial_valid_it, partial_test_it

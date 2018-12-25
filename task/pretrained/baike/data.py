@@ -73,9 +73,6 @@ class BaikeDataset(Dataset):
                 except:
                     pass
 
-                if len(examples) > 300000:
-                    break
-
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
