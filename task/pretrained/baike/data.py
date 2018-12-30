@@ -61,15 +61,15 @@ class BaikeDataset(Dataset):
         examples = []
         with gzip.open(path, mode='rt', compresslevel=6) as file:
             for line in tqdm(file, desc=('load dataset from %s' % path)):
-                words, *labels = line.split('\t\t')
+                chars, *labels = line.split('\t\t')
                 # words = words.split(' ')
-                words = list(words)
+                chars = list(chars)
                 try:
                     labels = [PhraseLabel.from_json(label) for label in labels]
-                    if len(labels) > 0 and len(words) < 300:
-                        words = np.array(words, dtype=np.str)
+                    if len(labels) > 0 and len(chars) < 500 and (labels[0].end - labels[0].begin < len(chars)):
+                        chars = np.array(chars, dtype=np.str)
                         # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
-                        examples.append(data.Example.fromlist([words, labels], fields))
+                        examples.append(data.Example.fromlist([chars, labels], fields))
                 except:
                     pass
 
@@ -98,7 +98,7 @@ class BaikeDataset(Dataset):
 
         return data.BucketIterator.splits(
             [train, valid],
-            batch_sizes=[batch_size, batch_size*2], batch_size_fn=batch_size_fn, sort_within_batch=True,
+            batch_sizes=[batch_size, batch_size*2], batch_size_fn=batch_size_fn, sort=True, sort_within_batch=True,
             device=device, **kwargs)
 
 

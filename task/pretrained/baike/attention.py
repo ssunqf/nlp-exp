@@ -4,10 +4,11 @@ import math
 import torch
 from torch import nn
 from .base import MIN_SCORE
+from ..transformer.base import PositionwiseFeedForward
 
 
 class GlobalAttention(nn.Module):
-    def __init__(self, dropout=0.3):
+    def __init__(self, dropout=0.1):
         super(GlobalAttention, self).__init__()
         self.dropout = nn.Dropout(dropout)
 
@@ -19,6 +20,7 @@ class GlobalAttention(nn.Module):
             mask = mask.unsqueeze(-2)
             attention_scores = attention_scores.masked_fill(mask == 0, MIN_SCORE)
         attention_probs = self.dropout(attention_scores.softmax(-1))
+
         return torch.matmul(attention_probs, value), attention_probs
 
 
@@ -74,7 +76,7 @@ class LocalAttention(nn.Module):
 
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, num_head, hidden_dim, atten_window_size=None, dropout=0.3):
+    def __init__(self, num_head, hidden_dim, atten_window_size=None, dropout=0.0):
         "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
         assert hidden_dim % num_head == 0
@@ -87,21 +89,13 @@ class MultiHeadedAttention(nn.Module):
         self.attention = GlobalAttention(dropout) if atten_window_size is None or atten_window_size < 0 \
             else LocalAttention(atten_window_size, dropout)
 
-        self.output_linearity = nn.Linear(hidden_dim, hidden_dim)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        for child in self.children():
-            if isinstance(child, nn.Linear):
-                nn.init.xavier_normal_(child.weight)
-
     def forward(self, query, key, value, mask=None, batch_first=False):
-        if batch_first:
+        if not batch_first:
             query = query.transpose(0, 1)
             key = key.transpose(0, 1)
             value = value.transpose(0, 1)
-            mask = mask.transpose(0, 1) if mask is not None else None
+            if mask is not None:
+                mask = mask.transpose(0, 1)
 
         if mask is not None:
             # Same mask applied to all h heads.
@@ -116,9 +110,9 @@ class MultiHeadedAttention(nn.Module):
         value, attention_weights = self.attention(query, key, value, mask=mask)
 
         # 3) "Concat" using a view and apply a final linear.
-        value = self.output_linearity(self._concat_head(value))
+        value = self._concat_head(value)
 
-        if batch_first:
+        if not batch_first:
             value = value.transpose(0, 1)
 
         return value
@@ -132,3 +126,24 @@ class MultiHeadedAttention(nn.Module):
         assert head_size == self.num_head
         assert head_dim == self.head_dim
         return input.transpose(1, 2).contiguous().view(batch_size, seq_len, self.num_head * self.head_dim)
+
+
+class TransformerLayer(nn.Module):
+    """
+    attention -> add & norm -> PositionwiseFeedForward
+    Note for code simplicity the norm is first as opposed to last.
+    """
+    def __init__(self, size, num_heads, dropout=0.1):
+        super(TransformerLayer, self).__init__()
+        self.output_linear = nn.Linear(size, size)
+        self.norm = nn.LayerNorm(size)
+        self.dropout = nn.Dropout(dropout)
+
+        self.atten = MultiHeadedAttention(num_heads, size, dropout=dropout)
+
+        self.ffn = PositionwiseFeedForward(size, dropout=dropout)
+
+    def forward(self, input, mask=None, batch_first=False):
+        atten_output = self.atten(input, input, input, mask, batch_first)
+        atten_output = self.output_linear(atten_output)
+        return self.ffn(self.norm(input + self.dropout(atten_output)))

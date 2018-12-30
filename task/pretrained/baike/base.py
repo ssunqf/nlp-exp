@@ -16,7 +16,7 @@ EOS_TOKEN = '</s>'
 PAD_TOKEN = '<pad>'
 MASK_TOKEN = '<mask>'
 
-MIN_SCORE = -1e5
+MIN_SCORE = -1e10
 
 class Label:
     __slots__ = 'begin', 'end', 'tags'
@@ -63,8 +63,8 @@ class PhraseLabel:
             return PhraseLabel(attr['begin'], attr['end'])
 
 
-def get_dropout_mask(prob: float, tensor_to_mask: torch.Tensor):
-    mask = torch.rand(tensor_to_mask.size(), device=tensor_to_mask.device) > prob
+def get_dropout_mask(*sizes, prob: float=None, device: torch.device=None):
+    mask = torch.rand(*sizes, device=device) > prob
     return mask.float().div(1 - prob)
 
 
@@ -114,3 +114,5 @@ def listfile(path: str):
             dir = './'
         return [os.path.join(dir, name)
                 for name in os.listdir(dir) if name.startswith(prefix)]
+
+

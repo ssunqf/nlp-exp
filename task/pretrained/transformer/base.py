@@ -14,7 +14,7 @@ PAD = '<pad>'
 BOS = '<s>'
 EOS = '</s>'
 
-MIN_SCORE = -1e5
+MIN_SCORE = -1e10
 
 def clones(module, N):
     "Produce N identical layers."

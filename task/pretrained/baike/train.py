@@ -101,6 +101,9 @@ class Trainer:
                     for n, l in _losses.items():
                         losses[n] += l.item()
                     count += 1
+
+                    del valid_batch
+
             return {n: l/count for n, l in losses.items()}
 
     def metrics(self, valid_it):
@@ -108,7 +111,7 @@ class Trainer:
         acc, pre, recall = [collections.defaultdict(float) for _ in range(3)]
         counter = collections.defaultdict(float)
 
-        phrase_correct, phrase_total = 0, 0
+        phrase_correct, phrase_total = 0, 1e-5
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
@@ -161,7 +164,9 @@ class Trainer:
                         find_phrases = self.model.list_phrase(valid_batch)
                         self.pretty_print(valid_batch, results, phrases, find_phrases)
 
-            scores = {n: {'acc': acc[n]/c, 'pre': pre[n]/c, 'recall': recall[n]/c} for n, c in counter.items()}
+                    del valid_batch
+
+            scores = {n: {'acc': acc[n]/(c+1e-5), 'pre': pre[n]/(c+1e-5), 'recall': recall[n]/(c+1e-5)} for n, c in counter.items()}
             scores['phrase'] = {'pre': phrase_correct/phrase_total}
             print(scores)
             return scores
@@ -202,6 +207,8 @@ class Trainer:
                     for n, l in losses.items():
                         label_losses[n] += l
 
+                    del batch
+
                     total_batch += 1
 
                     if num_iterations % self.valid_step == 0:
@@ -209,7 +216,7 @@ class Trainer:
                         valid_losses = self.valid(valid_it)
                         total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
 
-                        self.checkpoint(total_valid_loss)
+                        self.checkpoint(num_iterations, total_valid_loss)
 
                         label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
 
@@ -249,8 +256,13 @@ class Trainer:
                 # if self.train_it.iterations > self.config.warmup_step:
                 #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
-    def checkpoint(self, valid_loss):
-        torch.save(self.state_dict(), '%s/pretrained-last' % (self.checkpoint_dir))
+    def checkpoint(self, num_iterations, valid_loss):
+        torch.save(self.state_dict(),
+                   '%s/pretrained-last' % self.checkpoint_dir)
+
+        if num_iterations % 1e5 == 0:
+            torch.save(self.state_dict(),
+                       '%s/pretrained-%d' % (self.checkpoint_dir, num_iterations))
 
         if len(self.checkpoint_files) == 0 or self.checkpoint_files[-1][0] > valid_loss:
             checkpoint_file = '%s/pretrained-%.4f' % (self.checkpoint_dir, valid_loss)
@@ -321,15 +333,12 @@ class Trainer:
                             config.encoder_hidden_dim, config.encoder_cell_dim, config.encoder_num_layers,
                             residual=False, dropout=0.5)
 
-        transformer = None if config.attention_num_heads is None \
-            else TransformerLayer(config.encoder_size, config.attention_num_heads)
-
         label_classifiers = nn.ModuleList([
             LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_size)
         model = Model(text_field.vocab, embedding,
-                      encoder, transformer,
+                      encoder,
                       label_classifiers, phrase_classifier, config.phrase_mask_prob)
 
         model.to(config.device)
@@ -349,7 +358,7 @@ class Trainer:
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_size)
         model = Model(text_field.vocab, embedding,
-                      encoder, None,
+                      encoder,
                       label_classifiers, phrase_classifier, config.phrase_mask_prob)
 
         model.to(config.device)
@@ -364,18 +373,18 @@ class Trainer:
 
         encoder = ElmoEncoder(config.embedding_dim,
                               config.encoder_hidden_dim,
-                              config.encoder_cell_dim,
                               config.encoder_num_layers,
                               dropout=0.5)
 
         lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
                                      embedding.weight, padding_idx=text_field.vocab.stoi[PAD_TOKEN])
         label_classifiers = nn.ModuleList([
-            ContextClassifier(name, field.vocab, config.encoder_hidden_dim, config.label_dim)
+            ContextClassifier(name, field.vocab, config.encoder_hidden_dim, config.label_dim,
+                              focal_loss_gamma=config.focal_loss_gamma)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
         model = Model(text_field.vocab, embedding,
-                      encoder, None, lm_classifier,
+                      encoder, lm_classifier,
                       label_classifiers, phrase_classifier, config.phrase_mask_prob)
 
         model.to(config.device)
@@ -413,27 +422,29 @@ class Trainer:
 class Config:
     def __init__(self, output_dir=None):
         self.root = './baike/preprocess-char'
-        self.train_file = 'entity.url'
+        self.train_file = 'sentence.url'
 
         self.voc_max_size = 50000
-        self.voc_min_freq = 50
+        self.voc_min_freq = 100
         self.key_max_size = 150000
-        self.key_min_freq = 50
+        self.key_min_freq = 100
         self.subtitle_max_size = 150000
-        self.subtitle_min_freq = 50
+        self.subtitle_min_freq = 100
         self.attr_max_size = 150000
-        self.attr_min_freq = 50
+        self.attr_min_freq = 100
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 128
+        self.embedding_dim = 256
         self.encoder_mode = 'elmo'  # ['lstm', 'elmo', 'transformer']
-        self.encoder_hidden_dim = 128
-        self.encoder_cell_dim = 256
+        self.encoder_hidden_dim = 512
+        self.encoder_cell_dim = 512
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 
-        self.label_dim = 128
+        self.label_dim = 256
+
+        self.focal_loss_gamma = 2
 
         self.phrase_mask_prob = 0.0
 
@@ -456,7 +467,6 @@ class Config:
         with open(os.path.join(self.root, self.dir_prefix, 'config.txt'), 'wt') as file:
             file.write(json.dumps({name: param for name, param in self.__dict__.items() if name not in {'device'}},
                                   ensure_ascii=False, indent=2))
-
 
 
 if __name__ == '__main__':
