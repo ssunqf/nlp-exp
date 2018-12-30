@@ -3,6 +3,9 @@
 import torch
 from torch import nn
 
+from .encoder import ElmoEncoder
+
+
 class WindowEmbedding(nn.Module):
     def __init__(self, voc_size, embed_size, max_window_size: int=5, padding_idx=None, dropout=0.3):
         super(WindowEmbedding, self).__init__()
@@ -31,3 +34,19 @@ class WindowEmbedding(nn.Module):
         output = output.permute(0, 2, 1) if batch_first else output.permute(2, 0, 1)
 
         return output
+
+
+class ElmoEmbedding(nn.Module):
+    def __init__(self, embedding: nn.Embedding, elmo_encoder: ElmoEncoder, mode='top'):
+        super(ElmoEmbedding, self).__init__()
+
+        self.embedding = embedding
+        self.elmo_encoder = elmo_encoder
+        self.mode = mode
+
+    def forward(self, tokens):
+        embed = self.embedding(tokens)
+        forwards, backwards = self.elmo_encoder(embed)
+
+        if self.mode == 'top':
+            return torch.cat([forwards[-1], backwards[-1]], dim=-1)

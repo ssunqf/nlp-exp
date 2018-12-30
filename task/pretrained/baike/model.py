@@ -12,15 +12,14 @@ from torchtext.vocab import Vocab
 from task.pretrained.transformer.attention import TransformerLayer
 from .base import MASK_TOKEN, make_masks
 from .classifier import PhraseClassifier, LMClassifier
-from .encoder import Encoder
+from .encoder import ElmoEncoder
 
 
 class Model(nn.Module):
     def __init__(self,
                  text_voc: Vocab,
                  embedding: nn.Embedding,
-                 encoder: Encoder,
-                 transformer: TransformerLayer,
+                 encoder: ElmoEncoder,
                  lm_classifier: LMClassifier,
                  label_classifiers: nn.ModuleList,
                  phrase_classifier: PhraseClassifier,
@@ -31,7 +30,6 @@ class Model(nn.Module):
         self.mask_token_id = self.text_voc.stoi[MASK_TOKEN]
         self.embedding = embedding
         self.encoder = encoder
-        self.transformer = transformer
 
         self.lm_classifier = lm_classifier
         self.label_classifiers = label_classifiers
@@ -43,21 +41,19 @@ class Model(nn.Module):
         text, lens = data.text
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
-        masks = make_masks(text, lens)
-        hidden = self.encoder(self.embedding(text), lens)
-        if self.transformer:
-            hidden = self.transformer(hidden, masks, batch_first=False)
+
+        forwards, backwards = self.encoder(self.embedding(text), lens)
 
         losses = {}
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            loss = classifier(hidden, masks, labels)
+            loss = classifier(forwards[-1], backwards[-1], labels)
             losses[classifier.name] = loss
 
-        losses['phrase'] = self.phrase_classifier(hidden, masks, phrases)
+        losses['phrase'] = self.phrase_classifier(forwards[-1], backwards[-1], lens, phrases)
 
         if self.lm_classifier is not None:
-            losses['lm'] = self.lm_classifier(hidden, text)
+            losses['lm'] = self.lm_classifier(forwards[-1], backwards[-1], text)
 
         return losses, lens.size(0)
 
@@ -69,29 +65,24 @@ class Model(nn.Module):
 
     def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float]]], int]:
         text, lens = data.text
-        masks = make_masks(text, lens)
+
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
 
-        hidden = self.encoder(self.embedding(text), lens)
-        if self.transformer:
-            hidden = self.transformer(hidden, masks, batch_first=False)
+        forwards, backwards = self.encoder(self.embedding(text), lens)
 
         results = defaultdict(list)
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            res = classifier.predict(hidden, masks, labels)
+            res = classifier.predict(forwards[-1], backwards[-1], labels)
             results[classifier.name].extend(res)
 
-        return results, self.phrase_classifier.predict(hidden, masks, phrases), lens.size(0)
+        return results, self.phrase_classifier.predict(forwards[-1], backwards[-1], lens, phrases), lens.size(0)
 
     def list_phrase(self, data: data.Batch):
         text, lens = data.text
-        masks = make_masks(text, lens)
-        hidden = self.encoder(self.embedding(text), lens)
-        if self.transformer:
-            hidden = self.transformer(hidden, masks, batch_first=False)
-        phrases = self.phrase_classifier.find_phrase(hidden, masks)
+        forwards, backwards = self.encoder(self.embedding(text), lens)
+        phrases = self.phrase_classifier.find_phrase(forwards[-1], backwards[-1], lens)
 
         return phrases
 
@@ -122,10 +113,4 @@ class Model(nn.Module):
         phrases = [list(s) for s in phrases]
         return phrases
 
-if __name__ == '__main__':
 
-    train = BaikeDataset.iters(path='./baike', train='entity.pre.gz')
-
-    for it in train:
-        print(it)
-        break

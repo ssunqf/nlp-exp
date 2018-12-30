@@ -9,7 +9,6 @@ from .attention import MultiHeadedAttention
 from ..transformer.base import clones
 
 from .base import make_masks
-from .encoder import Encoder
 
 
 # add and norm
@@ -102,11 +101,11 @@ class EncoderLayer(nn.Module):
         return self.sublayer[1](x, self.feed_forward)
 
 
-class Transformer(Encoder):
+class Transformer(nn.Module):
     "Core encoder is a stack of N layers"
 
     def __init__(self, layer, N):
-        super(Encoder, self).__init__()
+        super(Transformer, self).__init__()
         self.layers = clones(layer, N)
         self.norm = nn.LayerNorm(layer.size)
 
@@ -133,4 +132,4 @@ class Transformer(Encoder):
         ffn = PositionwiseFeedForward(encoder_size, dropout=0.3)
         transformer = EncoderLayer(encoder_size, attention, ffn, dropout=0.3)
 
-        return Encoder(transformer, encoder_depth)
+        return Transformer(transformer, encoder_depth)

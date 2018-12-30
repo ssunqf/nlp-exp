@@ -12,10 +12,8 @@ class EmissionLayer(nn.Module):
         assert kernel_size % 2 == 1
 
         self.model = nn.Sequential(
-            nn.BatchNorm1d(in_size),
             nn.Conv1d(in_size, in_size, kernel_size, padding=kernel_size//2),
             nn.ReLU(),
-            nn.BatchNorm1d(in_size),
             nn.Conv1d(in_size, out_size, kernel_size=1)
         )
 
@@ -30,25 +28,21 @@ class EmissionLayer(nn.Module):
 
 
 class LinearCRF(nn.Module):
-    def __init__(self, hidden_size, num_tags, dropout=0.3):
+    def __init__(self, hidden_size, num_tags, transition_constraints, dropout=0.1):
         super(LinearCRF, self).__init__()
 
-        self.hidden2emission = nn.Linear(hidden_size, num_tags)
+        self.hidden2emission = nn.Sequential(nn.Linear(hidden_size, num_tags))
 
-        self._transition = nn.Parameter(torch.randn(num_tags, num_tags))
+        self._transition = nn.Parameter(
+            torch.randn(num_tags, num_tags).masked_fill_(transition_constraints == 0, MIN_SCORE))
         self.hidden_size = hidden_size
         self.num_tags = num_tags
 
-        self.reset_parameters()
+        self.transition_constraints = transition_constraints
 
     @property
     def transition(self):
-        return self._transition
-
-    def reset_parameters(self):
-        nn.init.xavier_normal_(self.hidden2emission.weight)
-        nn.init.xavier_normal_(self.hidden2emission.bias)
-        nn.init.xavier_normal_(self._transition)
+        return self._transition.masked_fill(self.transition_constraints == 0, MIN_SCORE)
 
     def _forward_score(self, emissions, lens):
         max_len, batch_size, emission_size = emissions.size()
@@ -59,7 +53,7 @@ class LinearCRF(nn.Module):
         forward_vars = [forward_0]
         for time in range(1, max_len, 1):
             forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.num_tags, -1)
-            forward_t = (forward_t + self.transition.unsqueeze(0)).logsumexp(-1) + emissions[time]
+            forward_t = (forward_t + self._transition.unsqueeze(0)).logsumexp(-1) + emissions[time]
             forward_vars.append(forward_t)
 
         return torch.stack([forward_vars[blen - 1][bid] for bid, blen in enumerate(lens)]).logsumexp(-1)
@@ -67,7 +61,7 @@ class LinearCRF(nn.Module):
     def _transition_select(self, prev_tags, curr_tags):
         return self.transition.index_select(0, curr_tags).gather(1, prev_tags.unsqueeze(-1)).squeeze(-1)
 
-    def _gold_score(self, emissions, lens, tags):
+    def _gold_score(self, emissions: torch.Tensor, lens: torch.Tensor, tags: torch.Tensor):
         '''
         :param emissions: Variable(FloatTensor(seq_len, batch, num_lables))
         :param tags: LongTensor(seq_len, batch)
@@ -87,11 +81,21 @@ class LinearCRF(nn.Module):
 
         return torch.stack([scores[lens[b]-1][b] for b in range(batch_size)])
 
-    def neg_log_likelihood(self, hidden, lens, masks, tags):
+    def neg_log_likelihood(self, hidden: torch.Tensor, lens: torch.Tensor, masks: torch.Tensor):
         emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
         return (forward_score - gold_score).sum(), len(lens)
+
+    def focal_loss(self, hiddens: torch.Tensor, lens: torch.Tensor, masks: torch.Tensor, gamma=2):
+        emissions = self.hidden2emission(hiddens)
+        forward_score = self._forward_score(emissions, lens)
+        gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
+
+        logp = gold_score - forward_score
+        probs = logp.exp()
+        weights = (1 - probs).pow(gamma)
+        return -torch.dot(weights, logp), len(lens)
 
     def _viterbi_decode(self, emission):
         sen_len, _ = emission.size()
@@ -111,14 +115,14 @@ class LinearCRF(nn.Module):
         best_path.reverse()
         return best_path, best_score
 
-    def forward(self, hidden, lens, masks):
+    def forward(self, hidden, lens):
         '''
         :param hidden: len * batch_size * hidden_dim
         :param lens: batch_size * len
         :return:
         '''
         emissions = self.hidden2emission(hidden)
-        return [self._viterbi_decode(emissions[:lens[sen_id], sen_id]) for sen_id in range(emissions.size(1))]
+        return [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
 
     # ------------------- only for test ---------------------
     def _valid_forward_score(self, emissions):
@@ -176,21 +180,16 @@ class LinearCRF(nn.Module):
 
         return list(zip(paths, scores))
 
-    def nbest(self, hiddens, lens, masks, topk=5):
+    def nbest(self, hiddens, lens, topk=5):
         emissions = self.hidden2emission(hiddens)
         return [self._nbest(emissions[:lens[sen_id], sen_id], topk) for sen_id in range(emissions.size(1))]
 
 
 class MaskedCRF(LinearCRF):
-    def __init__(self, hidden_size, num_tags, transition_constraints, dropout=0.3):
-        super(MaskedCRF, self).__init__(hidden_size, num_tags, dropout)
-        self.register_buffer('transition_constraints', transition_constraints)
+    def __init__(self, *args, **kwargs):
+        super(MaskedCRF, self).__init__(*args, **kwargs)
 
-    @property
-    def transition(self):
-        return self._transition.masked_fill(self.transition_constraints == 0, MIN_SCORE)
-
-    def _mask_score(self, emissions, lens, masks, tags):
+    def _mask_score(self, emissions, lens, masks):
         '''
         :param emissions: FloatTensor(seq_len, batch_size, tag_size)
         :param lens: sentence lengths
@@ -210,10 +209,19 @@ class MaskedCRF(LinearCRF):
 
         return torch.stack([forward_vars[blen - 1][bid] for bid, blen in enumerate(lens)]).logsumexp(-1)
 
-    def neg_log_likelihood(self, hiddens, lens, tag_masks, tags):
+    def neg_log_likelihood(self, hiddens: torch.Tensor, lens: torch.Tensor, tag_masks: torch.Tensor):
         emissions = self.hidden2emission(hiddens)
         forward_score = self._forward_score(emissions, lens)
-        mask_score = self._mask_score(emissions, lens, tag_masks, tags)
-        assert (mask_score < forward_score).sum() == 0
+        mask_score = self._mask_score(emissions, lens, tag_masks)
         return (forward_score - mask_score).sum(), len(lens)
+
+    def focal_loss(self, hiddens: torch.Tensor, lens: torch.Tensor, tag_masks: torch.Tensor, gamma=2):
+        emissions = self.hidden2emission(hiddens)
+        forward_score = self._forward_score(emissions, lens)
+        mask_score = self._mask_score(emissions, lens, tag_masks)
+
+        logp = mask_score - forward_score
+        probs = logp.exp()
+        weights = (1 - probs).pow(gamma)
+        return -torch.dot(weights, logp), len(lens)
 
