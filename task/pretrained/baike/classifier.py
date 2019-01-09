@@ -52,7 +52,6 @@ class SoftmaxLoss(nn.Module):
 
 
 class LabelClassifier(nn.Module):
-
     def __init__(self, name: str, voc: Vocab,
                  hidden_dim, label_dim, dropout=0.3):
         super(LabelClassifier, self).__init__()
@@ -62,7 +61,6 @@ class LabelClassifier(nn.Module):
         self.label_dim = label_dim
 
         self.hidden2feature = nn.Sequential(
-            nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, self.label_dim),
             nn.Tanh()
         )
@@ -117,6 +115,7 @@ class ContextClassifier(nn.Module):
                  name: str,
                  voc: Vocab,
                  hidden_dim, label_dim,
+                 phrase_length_embedding: nn.Embedding,
                  dropout=0.3,
                  focal_loss_gamma=2):
         super(ContextClassifier, self).__init__()
@@ -125,49 +124,66 @@ class ContextClassifier(nn.Module):
         self.hidden_dim = hidden_dim
         self.label_dim = label_dim
 
+        # 短语长度embedding, 最长为5， 大于5按5计算
+        self.phrase_length_max = phrase_length_embedding.num_embeddings
+        self.phrase_length_dim = phrase_length_embedding.embedding_dim
+        self.length_embedding = phrase_length_embedding
         self.context2ffn = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, self.label_dim),
-            nn.Hardtanh()
+            nn.Linear(hidden_dim * 2 + self.phrase_length_dim, self.label_dim),
+            nn.Tanh()
         )
 
         self.phrase2ffn = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, self.label_dim),
-            nn.Hardtanh()
+            nn.Linear(hidden_dim * 4 + self.phrase_length_dim, self.label_dim),
+            nn.Tanh()
         )
 
         self.loss = SoftmaxLoss(self.voc, self.label_dim, gamma=focal_loss_gamma)
 
     def forward(self, forwards: torch.Tensor, backwards: torch.Tensor,
                 labels: List[List[Label]]) -> torch.Tensor:
+
+        device = forwards.device
         context_features = []
+        context_lengthes = []
         context_tags = []
         phrase_features = []
+        phrase_lengthes = []
         phrase_tags = []
+
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
                     context = torch.cat([forwards[label.begin-1, bid], backwards[label.end, bid]], dim=-1)
                     context_features.append(context)
+                    context_lengthes.append(min(label.end-label.begin, self.phrase_length_max) - 1)
                     context_tags.append(label.tags)
 
                     phrase = self._span_embed(forwards[:, bid], backwards[:, bid], label.begin, label.end)
                     phrase_features.append(phrase)
+                    phrase_lengthes.append(min(label.end-label.begin, self.phrase_length_max) - 1)
                     phrase_tags.append(label.tags)
 
         if len(context_tags) > 0:
-            context_features = self.context2ffn(torch.stack(context_features, dim=0))
-            phrase_features = self.phrase2ffn(torch.stack(phrase_features, dim=0))
+            context_length_emb = self.length_embedding(torch.LongTensor(context_lengthes, device=device))
+            context_features = self.context2ffn(
+                torch.cat([context_length_emb, torch.stack(context_features, dim=0)],
+                          dim=-1))
+            phrase_length_emb = self.length_embedding(torch.LongTensor(phrase_lengthes, device=device))
+            phrase_features = self.phrase2ffn(
+                torch.cat([phrase_length_emb, torch.stack(phrase_features, dim=0)], dim=-1))
             return self.loss(torch.cat([context_features, phrase_features], dim=0), context_tags + phrase_tags)
         else:
             return torch.tensor([0.0], device=forwards.device)
 
     def predict(self, forwards: torch.Tensor, backwards: torch.Tensor,
                 labels: List[List[Label]]) -> List[List[Tuple[Label, torch.Tensor]]]:
+        device = forwards.device
         context_features = []
+        context_lengthes = []
         context_tags = []
         phrase_features = []
+        phrase_lengthes = []
         phrase_tags = []
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
@@ -175,20 +191,26 @@ class ContextClassifier(nn.Module):
                     # features.append(self._span_embed(hidden, bid, label.begin, label.end))
                     context = torch.cat([forwards[label.begin-1, bid], backwards[label.end, bid]], dim=-1)
                     context_features.append(context)
+                    context_lengthes.append(min(label.end - label.begin, self.phrase_length_max) - 1)
                     context_tags.append((bid, label))
 
                     phrase = self._span_embed(forwards[:, bid], backwards[:, bid], label.begin, label.end)
                     phrase_features.append(phrase)
+                    phrase_lengthes.append(min(label.end - label.begin, self.phrase_length_max) - 1)
                     phrase_tags.append((bid, label))
 
         results = [[] for _ in range(len(labels))]
         if len(context_features) > 0:
-            context_features = self.context2ffn(torch.stack(context_features, dim=0))
+            context_length_emb = self.length_embedding(torch.LongTensor(context_lengthes, device=device))
+            context_features = self.context2ffn(
+                torch.cat([context_length_emb, torch.stack(context_features, dim=0)], dim=-1))
             scores, indexes = self.loss.predict(context_features, 5)
             for (bid, label), topk in zip(context_tags, indexes):
                 results[bid].append((label, topk.tolist()))
 
-            phrase_features = self.phrase2ffn(torch.stack(phrase_features, dim=0))
+            phrase_length_emb = self.length_embedding(torch.LongTensor(phrase_lengthes, device=device))
+            phrase_features = self.phrase2ffn(
+                torch.cat([phrase_length_emb, torch.stack(phrase_features, dim=0)], dim=-1))
             scores, indexes = self.loss.predict(phrase_features, 5)
             for (bid, label), topk in zip(phrase_tags, indexes):
                 results[bid].append((label, topk.tolist()))
@@ -211,9 +233,8 @@ class LMClassifier(nn.Module):
         self.hidden_dim = hidden_dim
         self.padding_idx = padding_idx
         self.context_ffn = nn.Sequential(
-            nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, voc_dim),
-            nn.Hardtanh()
+            nn.Tanh()
         )
 
         self.context2token = nn.Linear(voc_dim, voc_size)
@@ -240,7 +261,6 @@ class PhraseClassifier(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_length = max_length
         self.ffn = nn.Sequential(
-            nn.Dropout(dropout),
             nn.Linear(hidden_dim * 4, 1),
             nn.Sigmoid()
         )

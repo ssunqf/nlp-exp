@@ -304,8 +304,8 @@ class Tagger(nn.Module):
         encoder = LSTMEncoder(encoder_dim, encoder_depth, attention, 0.2)
         latticeLayer = LatticeEncoderLayer(
             encoder_dim, pretrained_emb, max_subword_len, copy.deepcopy(ffn), dropout=0.2)
-        # encoder = Encoder(lstm, encoder_depth, latticeLayer)
-        # encoder = Encoder(lstm, encoder_depth)
+        # encode = Encoder(lstm, encoder_depth, latticeLayer)
+        # encode = Encoder(lstm, encoder_depth)
         # crf = LinearCRF(encoder_dim, len(tags))
         crf = MaskedCRF(encoder_dim, len(tags), tags.transition_constraints)
 

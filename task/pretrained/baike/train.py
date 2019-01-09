@@ -9,6 +9,8 @@ import random
 import time
 from typing import Dict, Tuple
 
+from tabulate import tabulate
+
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn, optim
@@ -138,28 +140,6 @@ class Trainer:
                                 phrase_correct += 1
                             phrase_total += 1
 
-                    def pretty_print(batch, label_results, phrases, find_phrases=None):
-                        text, lens = batch.text
-                        for bid in range(lens.size(0)):
-                            text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
-                            print()
-                            print(text_str)
-                            for name, result in label_results.items():
-                                for label, pred in result[bid]:
-                                    gold = set(self.label_vocabs[name].itos[i] for i in label.tags.tolist())
-                                    pred = set(self.label_vocabs[name].itos[i] for i in pred)
-                                    print('(%d,%d,%s): (%s, %s, %s)' % (
-                                        label.begin, label.end,
-                                        ''.join(text_str[label.begin:label.end]), name, gold, pred))
-
-                            for begin, end, gold, pred in phrases[bid]:
-                                print('(%d,%d,%s): (%f, %f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred))
-
-                            if find_phrases:
-                                print()
-                                for begin, end, prob in find_phrases[bid]:
-                                    print('(%d,%d,%s): prob=%f' % (begin, end, ''.join(text_str[begin:end]), prob))
-
                     if random.random() < 0.005:
                         find_phrases = self.model.list_phrase(valid_batch)
                         self.pretty_print(valid_batch, results, phrases, find_phrases)
@@ -239,10 +219,14 @@ class Trainer:
 
                     if num_iterations % (self.valid_step * 5) == 0:
                         for tag, mat, metadata in self.model.named_embeddings():
+                            '''
                             if len(metadata) > self.config.projector_max_size:
                                 half_size = self.config.projector_max_size // 2
                                 mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
                                 metadata = metadata[:half_size] + metadata[-half_size:]
+                            '''
+                            mat = mat[:self.config.projector_max_size]
+                            metadata = metadata[:self.config.projector_max_size]
                             metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
                             self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
 
@@ -346,26 +330,6 @@ class Trainer:
         return model
 
     @classmethod
-    def load_trans_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
-        embedding = Embeddings(len(text_field.vocab), config.embedding_dim,
-                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
-
-        encoder = Transformer.create(
-            config.encoder_size, config.attention_num_heads, config.encoder_num_layers, dropout=0.5)
-
-        label_classifiers = nn.ModuleList([
-            LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
-            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
-        phrase_classifier = PhraseClassifier(config.encoder_size)
-        model = Model(text_field.vocab, embedding,
-                      encoder,
-                      label_classifiers, phrase_classifier, config.phrase_mask_prob)
-
-        model.to(config.device)
-
-        return model
-
-    @classmethod
     def load_elmo_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
 
         embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
@@ -378,8 +342,11 @@ class Trainer:
 
         lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
                                      embedding.weight, padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+
+        phrase_length_embedding = nn.Embedding(config.phrase_length_max, config.phrase_length_dim)
         label_classifiers = nn.ModuleList([
             ContextClassifier(name, field.vocab, config.encoder_hidden_dim, config.label_dim,
+                              phrase_length_embedding,
                               focal_loss_gamma=config.focal_loss_gamma)
             for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
         phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
@@ -425,26 +392,28 @@ class Config:
         self.train_file = 'sentence.url'
 
         self.voc_max_size = 50000
-        self.voc_min_freq = 100
+        self.voc_min_freq = 50
         self.key_max_size = 150000
-        self.key_min_freq = 100
+        self.key_min_freq = 50
         self.subtitle_max_size = 150000
-        self.subtitle_min_freq = 100
+        self.subtitle_min_freq = 50
         self.attr_max_size = 150000
-        self.attr_min_freq = 100
+        self.attr_min_freq = 50
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 256
+        self.embedding_dim = 512
         self.encoder_mode = 'elmo'  # ['lstm', 'elmo', 'transformer']
-        self.encoder_hidden_dim = 512
-        self.encoder_cell_dim = 512
-        self.encoder_num_layers = 2
+        self.encoder_hidden_dim = 1024
+        self.encoder_num_layers = 3
         self.attention_num_heads = None
 
-        self.label_dim = 256
+        self.label_dim = 512
 
-        self.focal_loss_gamma = 2
+        self.focal_loss_gamma = 1
+
+        self.phrase_length_max = 5
+        self.phrase_length_dim = 10
 
         self.phrase_mask_prob = 0.0
 
@@ -452,7 +421,7 @@ class Config:
 
         self.batch_size = 16
 
-        self.dir_prefix = output_dir if output_dir else 'subsample-mean'
+        self.dir_prefix = output_dir if output_dir else 'elmo-focal'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 

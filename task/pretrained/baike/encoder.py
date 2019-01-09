@@ -48,12 +48,13 @@ class LSTMLayer(nn.Module):
 
 
 class LSTM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, bidirectional=True, dropout=0.3):
+    def __init__(self, input_dim, hidden_dim, num_layers, bidirectional=True, residual=False, dropout=0.3):
         super(LSTM, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.bidirectional = bidirectional
+        self.residual = residual
         self.dropout = dropout
 
         forwards, backwards = [], []
@@ -72,12 +73,16 @@ class LSTM(nn.Module):
 
         prev_out = input
         prev_h, prev_c = None, None
-        for f_layer, b_layer in zip(self.forwards, self.backwards):
+        for lid, (f_layer, b_layer) in enumerate(zip(self.forwards, self.backwards)):
 
             f_out, (f_h, f_c) = f_layer(prev_out)
             b_out, (b_h, b_c) = b_layer(prev_out)
 
-            prev_out = torch.cat([f_out, b_out], dim=-1)
+            new_out = torch.cat([f_out, b_out], dim=-1)
+            if not self.residual or lid == 0:
+                prev_out = new_out
+            else:
+                prev_out = prev_out + new_out
 
             prev_h = torch.cat([f_h, b_h], dim=-1)
             prev_c = torch.cat([f_c, b_c], dim=-1)
@@ -259,23 +264,44 @@ class ElmoEncoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
-        in_dim = input_dim
-        forwards, backwards = [], []
-        for l in range(num_layers):
-            forwards.append(LSTMLayer(in_dim, hidden_dim, go_forward=True, dropout=dropout))
-            backwards.append(LSTMLayer(in_dim, hidden_dim, go_forward=False, dropout=dropout))
-            in_dim = hidden_dim
+        self.forwards = nn.LSTM(input_dim, hidden_dim, num_layers, bidirectional=False, dropout=dropout)
+        self.backwards = nn.LSTM(input_dim, hidden_dim, num_layers, bidirectional=False, dropout=dropout)
 
-        self.forwards = nn.ModuleList(forwards)
-        self.backwards = nn.ModuleList(backwards)
+    def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
-    def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-        forwards, backwards = [input], [input]
+        forward_h, (f_h, f_c) = self.forwards(input)
 
-        for forward_layer, backward_layer in zip(self.forwards, self.backwards):
-            f_out, _ = forward_layer(forwards[-1])
-            b_out, _ = backward_layer(backwards[-1])
-            forwards.append(f_out)
-            backwards.append(b_out)
+        backward_input = input.clone()
+        for bid, blen in enumerate(lens):
+            backward_input[:blen, bid] = input[:blen, bid].flip([0])
 
-        return forwards[1:], backwards[1:]
+        reversed_backward_h, (b_h, b_c) = self.backwards(input)
+
+        backward_h = reversed_backward_h.clone()
+        for bid, blen in enumerate(lens):
+            backward_h[:blen, bid] = reversed_backward_h[:blen, bid].flip([0])
+
+        return forward_h, backward_h
+
+    def encoder_word(self, input: torch.Tensor, lens: torch.Tensor, word_ids: List[List[Tuple[int, int]]]):
+        forward_h, backward_h = self.forward(input, lens)
+
+        char_seq_len, batch_size, dim = forward_h.size()
+
+        word_lens = [len(s) for s in word_ids]
+        new_hidden = torch.FloatTensor(max(word_lens), batch_size, dim * 2, device=input.device)
+        for bid, words in enumerate(word_ids):
+            sen = []
+            for begin, end in words:
+                sen.append(torch.cat([forward_h[end-1, bid],backward_h[begin, bid]], -1))
+
+            new_hidden[:word_lens[bid], bid] = torch.stack(sen, dim=0)
+
+        return new_hidden, word_lens
+
+
+
+
+
+
+

@@ -69,7 +69,7 @@ class ConvLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    "Core encoder is a stack of N layers"
+    "Core encode is a stack of N layers"
 
     def __init__(self, layer, N):
         super(Encoder, self).__init__()

@@ -42,18 +42,18 @@ class Model(nn.Module):
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
 
-        forwards, backwards = self.encoder(self.embedding(text), lens)
+        forward_h, backward_h = self.encoder(self.embedding(text), lens)
 
         losses = {}
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            loss = classifier(forwards[-1], backwards[-1], labels)
+            loss = classifier(forward_h, backward_h, labels)
             losses[classifier.name] = loss
 
-        losses['phrase'] = self.phrase_classifier(forwards[-1], backwards[-1], lens, phrases)
+        losses['phrase'] = self.phrase_classifier(forward_h, backward_h, lens, phrases)
 
         if self.lm_classifier is not None:
-            losses['lm'] = self.lm_classifier(forwards[-1], backwards[-1], text)
+            losses['lm'] = self.lm_classifier(forward_h, backward_h, text)
 
         return losses, lens.size(0)
 
@@ -69,20 +69,20 @@ class Model(nn.Module):
         phrases = self._collect_phrase(data)
         text, phrases = self._mask_phrase(text, lens, phrases)
 
-        forwards, backwards = self.encoder(self.embedding(text), lens)
+        forward_h, backward_h = self.encoder(self.embedding(text), lens)
 
         results = defaultdict(list)
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            res = classifier.predict(forwards[-1], backwards[-1], labels)
+            res = classifier.predict(forward_h, backward_h, labels)
             results[classifier.name].extend(res)
 
-        return results, self.phrase_classifier.predict(forwards[-1], backwards[-1], lens, phrases), lens.size(0)
+        return results, self.phrase_classifier.predict(forward_h, backward_h, lens, phrases), lens.size(0)
 
     def list_phrase(self, data: data.Batch):
         text, lens = data.text
-        forwards, backwards = self.encoder(self.embedding(text), lens)
-        phrases = self.phrase_classifier.find_phrase(forwards[-1], backwards[-1], lens)
+        forward_h, backward_h = self.encoder(self.embedding(text), lens)
+        phrases = self.phrase_classifier.find_phrase(forward_h, backward_h, lens)
 
         return phrases
 

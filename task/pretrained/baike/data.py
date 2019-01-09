@@ -73,6 +73,9 @@ class BaikeDataset(Dataset):
                 except:
                     pass
 
+                if len(examples) > 100000:
+                    break
+
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
@@ -98,7 +101,10 @@ class BaikeDataset(Dataset):
 
         return data.BucketIterator.splits(
             [train, valid],
-            batch_sizes=[batch_size, batch_size*2], batch_size_fn=batch_size_fn, sort=True, sort_within_batch=True,
+            batch_sizes=[batch_size, batch_size*2],
+            batch_size_fn=batch_size_fn,
+            shuffle=True,
+            sort_within_batch=True,
             device=device, **kwargs)
 
 

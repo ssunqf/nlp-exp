@@ -1,5 +1,7 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
+
+import math
 import torch
 from torch import nn
 from collections import namedtuple
@@ -38,7 +40,7 @@ class LinearCRF(nn.Module):
         self.hidden_size = hidden_size
         self.num_tags = num_tags
 
-        self.transition_constraints = transition_constraints
+        self.transition_constraints = nn.Parameter(transition_constraints, requires_grad=False)
 
     @property
     def transition(self):
@@ -123,6 +125,13 @@ class LinearCRF(nn.Module):
         '''
         emissions = self.hidden2emission(hidden)
         return [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
+
+    def predict_with_prob(self, hidden, lens):
+        emissions = self.hidden2emission(hidden)
+        forward_score = self._forward_score(emissions, lens)
+        predicted = [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
+
+        return [(p, math.exp(logs - logz)) for (p, logs), logz in zip(predicted, forward_score.tolist())]
 
     # ------------------- only for test ---------------------
     def _valid_forward_score(self, emissions):
