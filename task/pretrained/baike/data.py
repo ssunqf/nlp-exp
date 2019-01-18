@@ -66,7 +66,7 @@ class BaikeDataset(Dataset):
                 chars = list(chars)
                 try:
                     labels = [PhraseLabel.from_json(label) for label in labels]
-                    if len(labels) > 0 and len(chars) < 500 and (labels[0].end - labels[0].begin < len(chars)):
+                    if len(labels) > 0 and len(chars) < 300 and (labels[0].end - labels[0].begin < len(chars)):
                         chars = np.array(chars, dtype=np.str)
                         # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                         examples.append(data.Example.fromlist([chars, labels], fields))
@@ -98,7 +98,10 @@ class BaikeDataset(Dataset):
 
         return data.BucketIterator.splits(
             [train, valid],
-            batch_sizes=[batch_size, batch_size*2], batch_size_fn=batch_size_fn, sort=True, sort_within_batch=True,
+            batch_sizes=[batch_size, batch_size*2],
+            batch_size_fn=batch_size_fn,
+            shuffle=True,
+            sort_within_batch=True,
             device=device, **kwargs)
 
 

@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 from tqdm import tqdm
 
 from task.util import utils
-from .base import PhraseLabel, mixed_open
+from .base import PhraseLabel, mixed_open, save_counter
 
 # LINK_PREFIX = 'link::'
 LINK_PREFIX = ''
@@ -198,10 +198,6 @@ def listfile(path: str):
         return [os.path.join(dir, name)
                 for name in os.listdir(dir) if name.startswith(prefix)]
 
-
-def save_counter(path: str, counter: Counter):
-    with mixed_open(path, 'wt') as file:
-        file.write(json.dumps(counter.most_common(), ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':

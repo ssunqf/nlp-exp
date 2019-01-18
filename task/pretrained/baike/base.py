@@ -7,6 +7,7 @@ import gzip
 import os
 import itertools
 import copy
+from collections import Counter
 
 from typing import List
 
@@ -16,7 +17,7 @@ EOS_TOKEN = '</s>'
 PAD_TOKEN = '<pad>'
 MASK_TOKEN = '<mask>'
 
-MIN_SCORE = -1e10
+MIN_SCORE = -1e20
 
 class Label:
     __slots__ = 'begin', 'end', 'tags'
@@ -98,7 +99,7 @@ def make_masks(sens: torch.Tensor, lens: torch.Tensor) -> torch.Tensor:
     return masks
 
 
-def mixed_open(path: str, mode):
+def mixed_open(path: str, mode='r'):
     if path.endswith('.gz'):
         return gzip.open(path, mode=mode, compresslevel=6)
     else:
@@ -114,5 +115,72 @@ def listfile(path: str):
             dir = './'
         return [os.path.join(dir, name)
                 for name in os.listdir(dir) if name.startswith(prefix)]
+
+
+def save_counter(path: str, counter: Counter):
+    with mixed_open(path, 'wt') as file:
+        file.write(json.dumps(counter.most_common(), ensure_ascii=False, indent=2))
+
+
+def strQ2B(ustring):
+    """全角转半角"""
+    rstring = ""
+    for uchar in ustring:
+        inside_code = ord(uchar)
+        if inside_code == 12288:  # 全角空格直接转换
+            inside_code = 32
+            rstring += chr(inside_code)
+        elif (inside_code >= 65281 and inside_code <= 65374 and inside_code != 65292):  # 全角字符（除空格,逗号）根据关系转化
+            inside_code -= 65248
+            rstring += chr(inside_code)
+        else:
+            rstring += uchar
+    return rstring
+
+
+def bio_to_bmeso(chars, types):
+    n_chars, n_types = [], []
+    buffer_c, buffer_t = [], []
+
+    def _to_bmeso(_types):
+        tag = _types[0][2:] if _types[0].startswith('B-') else _types[0]
+
+        if len(_types) == 1:
+            return ['S_' + tag]
+        elif len(_types) >= 2:
+            return ['B_' + tag] + ['M_' + tag] * (len(_types) - 2) + ['E_' + tag]
+
+    for token, type in zip(chars, types):
+        token = strQ2B(token)
+        if type[0] in ['B', 'O'] and len(buffer_c) > 0:
+            buffer_t = _to_bmeso(buffer_t)
+
+            n_chars.extend(buffer_c)
+            n_types.extend(buffer_t)
+
+            buffer_c, buffer_t = [], []
+
+        if type[0] in ['B', 'O']:
+            buffer_c, buffer_t = [token], [type]
+        elif type[0] == 'I':
+            buffer_c.append(token)
+            buffer_t.append(type)
+
+    if len(buffer_c) > 0:
+        buffer_t = _to_bmeso(buffer_t)
+
+        n_chars.extend(buffer_c)
+        n_types.extend(buffer_t)
+
+    return n_chars, n_types
+
+
+def to_BMES(length, tag):
+    if length == 1:
+        return ['S_%s' % tag]
+    elif length > 1:
+        return ['B_%s' % tag] + ['M_%s' % tag] * (length - 2) + ['E_%s' % tag]
+    else:
+        raise RuntimeError('length must be big than 0.')
 
 

@@ -1,42 +1,48 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
 
+import argparse
+import itertools
+import math
 import os
 import random
 import time
-from collections import defaultdict, OrderedDict, deque, Counter
-from typing import List, Tuple, Dict
-from tqdm import tqdm
-import argparse
+from collections import defaultdict, deque
+from typing import Dict
 
-
-import torch
-from torch import nn, optim
-from torchtext import data, vocab
-from torchtext.data.iterator import BucketIterator
-from .encoder import StackLSTM, ElmoEncoder, LSTM
-from .crf import LinearCRF, MaskedCRF
-from ..transformer.vocab import TagVocab
-from ..transformer.field import PartialField
-from .train import Trainer, Config
-from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, make_masks
-from .embedding import WindowEmbedding
-from .attention import MultiHeadedAttention, TransformerLayer
-
+from tabulate import tabulate
 from tensorboardX import SummaryWriter
+from torch import optim
+from torchtext import vocab
+from torchtext.data.iterator import BucketIterator
+from tqdm import tqdm
+
+from .attention import MultiHeadedAttention
+from .base import INIT_TOKEN, EOS_TOKEN, PAD_TOKEN, make_masks, bio_to_bmeso
+from .crf import LinearCRF
+from .encoder import ElmoEncoder, LSTM
+from .tags import *
+from .train import Trainer, Config
+from ..transformer.field import PartialField
+from ..transformer.vocab import TagVocab
 
 
 class NamedEntityData(data.Dataset):
+
     @staticmethod
     def sort_key(ex):
         return len(ex.text)
 
     def __init__(self, path: str, fields: List, **kwargs):
-        examples = [data.Example.fromlist(self._toBMES(chars, types), fields)
-                    for chars, types in self._getline(path)]
+
+        examples = []
+        for chars, types in self.get_line(path):
+            chars, types = bio_to_bmeso(chars, types)
+            examples.append(data.Example.fromlist([chars, types], fields))
         super(NamedEntityData, self).__init__(examples, fields, **kwargs)
 
-    def _getline(self, path):
+    @staticmethod
+    def get_line(path):
         with open(path) as file:
             chars, types = [], []
             for line in tqdm(file, desc='load data from %s ' % (path)):
@@ -52,36 +58,38 @@ class NamedEntityData(data.Dataset):
             if len(chars) > 0:
                 yield chars, types
 
-    def _toBMES(self, chars, types):
-        n_chars, n_types = [], []
-        buffer_c, buffer_t = [], []
-        for char, type in zip(chars, types):
-            if type[0] in ['B', 'O'] and len(buffer_c) > 0:
-                tag = buffer_t[0][2:] if buffer_t[0].startswith('B-') else buffer_t[0]
+class POSData(data.Dataset):
 
-                if len(buffer_t) == 1:
-                    buffer_t = ['S_' + tag]
-                elif len(buffer_t) >= 2:
-                    buffer_t = ['B_' + tag] + ['M_' + tag] * (len(buffer_t) - 2) + ['E_' + tag]
+    @staticmethod
+    def sort_key(ex):
+        return len(ex.text)
 
-                n_chars.extend(buffer_c)
-                n_types.extend(buffer_t)
+    def __init__(self, path: str, fields: List, **kwargs):
+        examples = [data.Example.fromlist((chars, types), fields)
+                    for chars, types in self.get_line(path)]
+        super(POSData, self).__init__(examples, fields, **kwargs)
 
-                buffer_c, buffer_t = [], []
-
-            if type[0] in ['B', 'O']:
-                buffer_c, buffer_t = [char], [type]
-            elif type[0] == 'I':
-                buffer_c.append(char)
-                buffer_t.append(type)
-        return n_chars, n_types
+    @staticmethod
+    def get_line(path):
+        with open(path) as file:
+            for line in tqdm(file, desc='load data from %s ' % (path)):
+                chars, types = [], []
+                for tokens in line.split():
+                    _word, _type = tokens.rsplit('#', maxsplit=1)
+                    chars.extend(_word)
+                    if len(_word) == 1:
+                        types.extend(['S_%s' % _type])
+                    elif len(_word) >= 2:
+                        types.extend(['B_%s' % _type] + ['M_%s' % _type] * (len(_word) - 2) + ['E_%s' % _type])
+                yield chars, types
 
 
 class Tagger(nn.Module):
     def __init__(self, words: vocab.Vocab, tags: TagVocab,
                  embedding: nn.Embedding,
+                 tag_embeddings: nn.Module,
                  elmo_encoder: ElmoEncoder,
-                 encoder: StackLSTM,
+                 encoder: LSTM,
                  attention: MultiHeadedAttention,
                  crf: LinearCRF):
         super(Tagger, self).__init__()
@@ -89,6 +97,8 @@ class Tagger(nn.Module):
         self.tags = tags
 
         self.embedding = embedding
+        self.tag_embeddings = tag_embeddings
+        self.dropout = nn.Dropout(0.5)
         self.elmo_encoder = elmo_encoder
         self.encoder = encoder
         self.attention = attention
@@ -106,20 +116,30 @@ class Tagger(nn.Module):
         sens, lens = batch.text
         token_masks = make_masks(sens, lens)
         emb = self._embedding(sens, lens)
-        hidden, _ = self.encoder(emb)
+        # emb = torch.cat([emb] + [tag_embedding(*getattr(batch, tag_embedding.name))
+        #           for tag_embedding in self.tag_embeddings], dim=-1)
+
+        hidden, _ = self.encoder(self.dropout(emb))
         if self.attention:
-            hidden = self.attention(hidden, token_masks, batch_first=False)
+            hidden = self.attention(hidden, hidden, hidden, token_masks, batch_first=False)
         return hidden, token_masks
 
-    def train(self, mode=True):
-        super().train(mode)
-        self.elmo_encoder.train(False)
-        return self
+    '''
+    def _encode(self, batch: data.Batch):
+        sens, lens = batch.text
+        token_masks = make_masks(sens, lens)
+        sens = [['<S>' if self.words.itos[wid] in [' ', '\t'] else self.words.itos[wid]
+                 for wid in sens[1:len-1, bid].tolist()] for bid, len in enumerate(lens)]
+        print(sens)
+        hidden = self.bert_encoder.encode(sens, lens)
+        print(hidden.size())
+        return hidden, token_masks
+    '''
 
     def predict(self, batch: data.Batch):
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return self.crf(hiddens, lens)
+        return self.crf.predict_with_prob(hiddens, lens)
 
     def nbest(self, batch: data.Batch):
         sens, lens = batch.text
@@ -130,7 +150,7 @@ class Tagger(nn.Module):
         sens, lens = batch.text
         tag_masks, tags = batch.tags
         hidden, token_masks = self._encode(batch)
-        return self.crf.focal_loss(hidden, lens, tag_masks)
+        return self.crf.neg_log_likelihood(hidden, lens, tag_masks)
 
     def print(self, batch: data.Batch):
         text, text_len = batch.text
@@ -208,10 +228,10 @@ class Tagger(nn.Module):
 
             pred_tag = [self.tags.itos[tag_id] for tag_id in pred_tag]
             gold_tag = gold_tags[i][:text_len[i]]
-            if pred_tag != gold_tag:
-                pred_tag = ''.join(tostr(sen, pred_tag))
-                gold_tag = ''.join(tostr(sen, gold_tag))
-                print('\ngold: %s\npred: %s\nscore: %f' % (gold_tag, pred_tag, score))
+            # if pred_tag != gold_tag:
+            pred_tag = ''.join(tostr(sen, pred_tag))
+            gold_tag = ''.join(tostr(sen, gold_tag))
+            print('\ngold: %s\npred: %s\nscore: %f' % (gold_tag, pred_tag, score))
 
         return results
 
@@ -255,11 +275,11 @@ class Tagger(nn.Module):
             masks, golds = batch.tags
             preds = self.predict(batch)
 
-            #print(gold_tags)
+            # print(gold_tags)
             for i in range(len(text_len)):
                 pred, score = preds[i]
                 _correct_counts, _gold_counts, _pred_counts = self.evaluation_one(
-                    [self.tags.itos[p] for p in pred[1:-1]], golds[i][1:text_len[i]-1])
+                    [self.tags.itos[p] for p in pred[1:-1]], golds[i][1:text_len[i] - 1])
 
                 correct_counts.update(_correct_counts)
                 gold_counts.update(_gold_counts)
@@ -269,32 +289,27 @@ class Tagger(nn.Module):
         total_gold = sum(gold_counts.values())
         total_pred = sum(pred_counts.values())
 
-        results = {'total_f1': total_correct*2/(total_gold+total_pred+1e-5),
-                   'total_prec': total_correct/(total_gold+1e-5),
-                   'total_recall': total_correct/(total_pred+1e-5)}
+        results = {'total_f1': total_correct * 2 / (total_gold + total_pred + 1e-5),
+                   'total_prec': total_correct / (total_gold + 1e-5),
+                   'total_recall': total_correct / (total_pred + 1e-5)}
         for name in gold_counts.keys():
-            results['%s_f1' % name] = correct_counts[name]*2/(pred_counts[name]+gold_counts[name]+1e-5)
-            results['%s_prec' % name] = correct_counts[name]/(pred_counts[name] + 1e-5)
-            results['%s_recall' % name] = correct_counts[name]/(gold_counts[name] + 1e-5)
+            results['%s_f1' % name] = correct_counts[name] * 2 / (pred_counts[name] + gold_counts[name] + 1e-5)
+            results['%s_prec' % name] = correct_counts[name] / (pred_counts[name] + 1e-5)
+            results['%s_recall' % name] = correct_counts[name] / (gold_counts[name] + 1e-5)
 
         return results
-
-    def parameters(self, recurse=True):
-        yield from self.embedding.parameters(recurse)
-        yield from self.encoder.parameters(recurse)
-        yield from self.crf.parameters(recurse)
 
 
 class FineTrainer:
     def __init__(self, config, model: Tagger,
-                 partial_train_it, partial_valid_it, partial_test_it,
+                 train_it, valid_it, test_it,
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=5e-6)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=2e-3)
 
         self.train_it, self.valid_it, self.test_it = \
-            partial_train_it, partial_valid_it, partial_test_it
+            train_it, valid_it, test_it
 
         self.valid_step = valid_step
         self.checkpoint_dir = checkpoint_dir
@@ -337,6 +352,9 @@ class FineTrainer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
         self.optimizer.step()
 
+        if rloss > 1000000:
+            self.model.sample(batch)
+
         return rloss, num_sen
 
     def valid(self, valid_it) -> Tuple[torch.Tensor, float]:
@@ -359,6 +377,12 @@ class FineTrainer:
 
             return total_loss / num_samples, num_samples
 
+    @staticmethod
+    def tabulate_format(scores: Dict) -> str:
+        return tabulate([[key, [(n.rsplit('_', maxsplit=1)[1], '%0.5f' % s) for n, s in values]]
+                         for key, values in
+                         itertools.groupby(scores.items(), key=lambda item: item[0].rsplit('_', maxsplit=1)[0])])
+
     def train(self):
         total_loss, total_sen, start = 0, 1e-10, time.time()
         checkpoint_losses = deque()
@@ -380,22 +404,29 @@ class FineTrainer:
 
                 self.checkpoint(checkpoint_losses, valid_loss)
 
-                print("train loss=%.6f\t\tvalid loss=%.6f" % (total_loss/total_sen, valid_loss))
+                print("train loss=%.6f\t\tvalid loss=%.6f" % (total_loss / total_sen, valid_loss))
                 print("speed:   train %.2f sentence/s  valid %.2f sentence/s\n\n" %
                       (train_speed, valid_num_samples / (time.time() - inference_start)))
 
-                self.summary_writer.add_scalars('loss', {'train': total_loss/total_sen, 'valid': valid_loss}, step)
+                self.summary_writer.add_scalars('loss', {'train': total_loss / total_sen, 'valid': valid_loss}, step)
 
                 total_loss, total_sen, start = 0, 1e-10, time.time()
 
             if self.train_it.iterations % (self.valid_step) == 0:
                 with torch.no_grad():
+                    '''
+                    print([(embedding.name, embedding.scale_ratio.item()) for embedding in self.model.tag_embeddings])
+                    self.summary_writer.add_scalars(
+                        'tag_weights',
+                        {embedding.name: embedding.scale_ratio.item() for embedding in self.model.tag_embeddings},
+                        step)
+                    '''
                     valid_res = self.model.evaluation(self.valid_it)
-                    print(valid_res)
+                    print(self.tabulate_format(valid_res))
                     self.summary_writer.add_scalars('eval_valid', valid_res, step)
 
                     eval_res = self.model.evaluation(self.test_it)
-                    print(eval_res)
+                    print(self.tabulate_format(eval_res))
                     self.summary_writer.add_scalars('eval_test', eval_res, step)
 
     def checkpoint(self, checkpoint_losses, valid_loss):
@@ -405,11 +436,11 @@ class FineTrainer:
             checkpoint_losses.append(valid_loss)
 
             torch.save(self.state_dict(),
-                       '%s/ctb-pos-%0.4f' % (self.checkpoint_dir, valid_loss))
+                       '%s/model-%0.4f' % (self.checkpoint_dir, valid_loss))
 
             if len(checkpoint_losses) > 5:
                 removed = checkpoint_losses.popleft()
-                os.remove('%s/ctb-pos-%0.4f' % (self.checkpoint_dir, removed))
+                os.remove('%s/model-%0.4f' % (self.checkpoint_dir, removed))
 
     @classmethod
     def create(cls, coarse_config, checkpoint, fine_config):
@@ -424,46 +455,67 @@ class FineTrainer:
             embedding, elmo_encoder = None, None
 
         tag_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
-        train, valid, test = NamedEntityData.splits(
-            path=fine_config.full_prefix,
+
+        char_fields = []
+        for tagger, dim in fine_config.taggers:
+            char_fields.append(TagField(tagger))
+
+        train, valid, test = fine_config.dataset_class.splits(
+            path=fine_config.data_dir,
             train=fine_config.train,
             validation=fine_config.valid,
             test=fine_config.test,
-            fields=[('text', TEXT), ('tags', tag_field)])
+            fields=[(('text', *[field.name for field in char_fields]),
+                     (TEXT, *char_fields)), ('tags', tag_field)])
 
         if checkpoint is None:
             TEXT.build_vocab(train, min_freq=fine_config.text_min_freq)
 
         tag_field.build_vocab(train, min_freq=fine_config.tag_min_freq)
 
+        for field in char_fields:
+            field.build_vocab(train, min_freq=fine_config.tag_min_freq)
+
         train_it, valid_it, test_it = \
             BucketIterator.splits([train, valid, test],
                                   batch_sizes=fine_config.batch_sizes,
-                                  shuffle=True,
-                                  sort=True,
                                   device=fine_config.device,
                                   sort_within_batch=True)
 
         train_it.repeat = True
 
+        tag_embeddings = nn.ModuleList(
+            [TagEmbedding(field.name, len(field.vocab), dim, padding_idx=field.vocab.stoi[PAD_TOKEN])
+             for field, (tagger, dim) in zip(char_fields, fine_config.taggers)])
+        total_tag_dim = sum(dim for tagger, dim in fine_config.taggers)
+
+        print('voc', '\n'.join(['%s:%d %s' % (field.name, len(field.vocab), ' '.join(field.vocab.itos)) for field in char_fields]))
+        print('total_tag_dim = %d' % total_tag_dim)
+
         if checkpoint is None:
             embedding = nn.Embedding(len(TEXT.vocab), fine_config.embedding_dim,
                                      padding_idx=TEXT.vocab.stoi[PAD_TOKEN])
 
-            encoder = LSTM(fine_config.embedding_dim,
-                              fine_config.encoder_hidden_dim//2,
-                              fine_config.encoder_num_layers,
-                              bidirectional=True,
-                              dropout=0.5)
+            encoder = nn.LSTM(
+                fine_config.embedding_dim, # + total_tag_dim,
+                fine_config.encoder_hidden_dim // 2,
+                fine_config.encoder_num_layers,
+                bidirectional=True,
+                # residual=fine_config.encoder_residual,
+                dropout=0.5)
         else:
-            encoder = LSTM(coarse_config.encoder_hidden_dim * 2,
-                           fine_config.encoder_hidden_dim//2,
-                           1, bidirectional=True, dropout=0.5)
+            encoder = nn.LSTM(
+                coarse_config.encoder_hidden_dim * 2 + total_tag_dim,
+                fine_config.encoder_hidden_dim // 2,
+                1,
+                bidirectional=True,
+                # residual=fine_config.encoder_residual,
+                dropout=0.5)
 
         if fine_config.attention_num_heads:
-            attention = TransformerLayer(fine_config.encoder_hidden_dim,
-                                         fine_config.attention_num_heads,
-                                         dropout=0.5)
+            attention = MultiHeadedAttention(fine_config.attention_num_heads,
+                                             fine_config.encoder_hidden_dim,
+                                             dropout=0.5)
         else:
             attention = None
 
@@ -472,7 +524,10 @@ class FineTrainer:
                         tag_field.vocab.transition_constraints,
                         dropout=0.1)
         fine_model = Tagger(TEXT.vocab, tag_field.vocab,
-                            embedding, elmo_encoder, encoder,
+                            embedding,
+                            tag_embeddings,
+                            elmo_encoder,
+                            encoder,
                             attention,
                             crf)
 
@@ -485,14 +540,18 @@ class FineTrainer:
                    fine_config.checkpoint_path)
 
 
-class FineConfig:
-    def __init__(self):
-        self.partial_prefix = './ner/data'
-        self.full_prefix = './ner/data'
+class NERConfig:
+    def __init__(self, model_dir: str = None):
+        self.data_dir = './ner/data'
+        self.model_dir = model_dir if model_dir else './ner/model'
+
+        os.makedirs(self.model_dir, exist_ok=True)
 
         self.train = 'example.train'
         self.valid = 'example.dev'
         self.test = 'example.test'
+
+        self.dataset_class = NamedEntityData
 
         self.batch_sizes = [16, 32, 32]
 
@@ -505,25 +564,73 @@ class FineConfig:
 
         self.common_size = 1000
 
+        self.char_tag_dim = 10
+
+        self.taggers = [(jieba_pos, 20), (place, 8), (person, 8), (idioms, 8), (organizations, 8)]
+
         # model
-        self.vocab_size = 100
-        self.embedding_dim = 256
-        self.encoder_hidden_dim = 256
+        self.embedding_dim = 128
+        self.encoder_hidden_dim = 128
         self.encoder_num_layers = 2
         self.encoder_residual = False
         self.attention_num_heads = None
 
+        self.loss = 'nll'  # ['nll', 'focal_loss']
 
-        self.loss = 'nll' # ['nll', 'focal_loss']
+        self.device = torch.device('cpu')  # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-        self.device = torch.device('cpu') # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-        self.cached_dataset_prefix = './ner/dataset'
-        self.checkpoint_path = './ner/attention/model/mode_{}_emb_{}_hidden_{}_layer_{}_head_{}'.format(
-            'lstm', self.embedding_dim, self.encoder_hidden_dim, self.encoder_num_layers, self.attention_num_heads)
+        self.cached_dataset_prefix = os.path.join(self.data_dir, 'dataset')
+        self.checkpoint_path = os.path.join(self.model_dir, 'checkpoint')
+        os.makedirs(self.checkpoint_path, exist_ok=True)
 
         # summary parameters
-        self.summary_dir = os.path.join('./ner/attention', 'summary')
+        self.summary_dir = os.path.join(self.model_dir, 'summary')
+        os.makedirs(self.summary_dir, exist_ok=True)
+
+        self.valid_step = 200
+
+
+class POSConfig:
+    def __init__(self, model_dir: str = None):
+        self.data_dir = './pos/data'
+        self.model_dir = model_dir if model_dir else './ner/model'
+        os.makedirs(self.model_dir, exist_ok=True)
+
+        self.train = 'train'
+        self.valid = 'valid'
+        self.test = 'gold'
+
+        self.dataset_class = POSData
+
+        self.batch_sizes = [16, 32, 32]
+
+        # vocabulary
+        self.text_min_freq = 5
+        # text_min_size = 50000
+
+        self.tag_min_freq = 1
+        # tag_min_size = 50000
+
+        self.common_size = 1000
+
+        # model
+        self.vocab_size = 100
+        self.embedding_dim = 128
+        self.encoder_hidden_dim = 128
+        self.encoder_num_layers = 2
+        self.encoder_residual = False
+        self.attention_num_heads = 4
+
+        self.loss = 'nll'  # ['nll', 'focal_loss']
+
+        self.device = torch.device('cpu')  # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+        self.cached_dataset_prefix = os.path.join(self.data_dir, 'dataset')
+        self.checkpoint_path = os.path.join(self.model_dir, 'checkpoint')
+        os.makedirs(self.checkpoint_path, exist_ok=True)
+
+        # summary parameters
+        self.summary_dir = os.path.join(self.model_dir, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
         self.valid_step = 200
@@ -532,12 +639,15 @@ class FineConfig:
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser(description='Preprocess baike corpus and save vocabulary')
     argparser.add_argument('--checkpoint', type=str, help='checkpoint path')
+    argparser.add_argument('--task', type=str, help='task type, [pos, ner]')
 
     args = argparser.parse_args()
 
-    trainer = FineTrainer.create(Config(), args.checkpoint, FineConfig())
+    if args.task == 'pos':
+        trainer = FineTrainer.create(Config(), args.checkpoint, POSConfig())
+    elif args.task == 'ner':
+        trainer = FineTrainer.create(Config(), args.checkpoint, NERConfig())
+    else:
+        raise RuntimeError('%s isn\'t recognized.' % args.task)
 
     trainer.train()
-
-
-

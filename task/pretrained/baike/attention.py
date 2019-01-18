@@ -89,6 +89,13 @@ class MultiHeadedAttention(nn.Module):
         self.attention = GlobalAttention(dropout) if atten_window_size is None or atten_window_size < 0 \
             else LocalAttention(atten_window_size, dropout)
 
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_normal_(self.query_linearity.weight)
+        nn.init.xavier_normal_(self.key_linearity.weight)
+        nn.init.xavier_normal_(self.value_linearity.weight)
+
     def forward(self, query, key, value, mask=None, batch_first=False):
         if not batch_first:
             query = query.transpose(0, 1)
