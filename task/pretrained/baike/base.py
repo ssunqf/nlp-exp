@@ -17,7 +17,7 @@ EOS_TOKEN = '</s>'
 PAD_TOKEN = '<pad>'
 MASK_TOKEN = '<mask>'
 
-MIN_SCORE = -1e20
+MIN_SCORE = -1e10
 
 class Label:
     __slots__ = 'begin', 'end', 'tags'
@@ -138,22 +138,24 @@ def strQ2B(ustring):
     return rstring
 
 
+def to_bmes(length, tag):
+    if length == 1:
+        return ['S_%s' % tag]
+    elif length > 1:
+        return ['B_%s' % tag] + ['M_%s' % tag] * (length - 2) + ['E_%s' % tag]
+    else:
+        raise RuntimeError('length must be big than 0.')
+
+
 def bio_to_bmeso(chars, types):
     n_chars, n_types = [], []
     buffer_c, buffer_t = [], []
 
-    def _to_bmeso(_types):
-        tag = _types[0][2:] if _types[0].startswith('B-') else _types[0]
-
-        if len(_types) == 1:
-            return ['S_' + tag]
-        elif len(_types) >= 2:
-            return ['B_' + tag] + ['M_' + tag] * (len(_types) - 2) + ['E_' + tag]
-
     for token, type in zip(chars, types):
         token = strQ2B(token)
         if type[0] in ['B', 'O'] and len(buffer_c) > 0:
-            buffer_t = _to_bmeso(buffer_t)
+            tag = buffer_t[0][2:] if buffer_t[0].startswith('B-') else buffer_t[0]
+            buffer_t = to_bmes(len(buffer_c), tag)
 
             n_chars.extend(buffer_c)
             n_types.extend(buffer_t)
@@ -167,20 +169,13 @@ def bio_to_bmeso(chars, types):
             buffer_t.append(type)
 
     if len(buffer_c) > 0:
-        buffer_t = _to_bmeso(buffer_t)
+        tag = buffer_t[0][2:] if buffer_t[0].startswith('B-') else buffer_t[0]
+        buffer_t = to_bmes(len(buffer_c), tag)
 
         n_chars.extend(buffer_c)
         n_types.extend(buffer_t)
 
     return n_chars, n_types
 
-
-def to_BMES(length, tag):
-    if length == 1:
-        return ['S_%s' % tag]
-    elif length > 1:
-        return ['B_%s' % tag] + ['M_%s' % tag] * (length - 2) + ['E_%s' % tag]
-    else:
-        raise RuntimeError('length must be big than 0.')
 
 

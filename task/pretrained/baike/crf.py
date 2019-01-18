@@ -33,7 +33,9 @@ class LinearCRF(nn.Module):
     def __init__(self, hidden_size, num_tags, transition_constraints, dropout=0.1):
         super(LinearCRF, self).__init__()
 
-        self.hidden2emission = nn.Sequential(nn.Linear(hidden_size, num_tags))
+        self.hidden2emission = nn.Sequential(
+            nn.Linear(hidden_size, num_tags)
+        )
 
         self._transition = nn.Parameter(
             torch.randn(num_tags, num_tags).masked_fill_(transition_constraints == 0, MIN_SCORE))
@@ -50,15 +52,13 @@ class LinearCRF(nn.Module):
         max_len, batch_size, emission_size = emissions.size()
         assert emission_size == self.num_tags
 
-        forward_0 = emissions[0]
-
-        forward_vars = [forward_0]
+        forward_vars = [emissions[0]]
         for time in range(1, max_len, 1):
             forward_t = forward_vars[-1].unsqueeze(1).expand(-1, self.num_tags, -1)
             forward_t = (forward_t + self._transition.unsqueeze(0)).logsumexp(-1) + emissions[time]
             forward_vars.append(forward_t)
 
-        return torch.stack([forward_vars[blen - 1][bid] for bid, blen in enumerate(lens)]).logsumexp(-1)
+        return torch.stack([forward_vars[blen-1][bid] for bid, blen in enumerate(lens)]).logsumexp(-1)
 
     def _transition_select(self, prev_tags, curr_tags):
         return self.transition.index_select(0, curr_tags).gather(1, prev_tags.unsqueeze(-1)).squeeze(-1)
@@ -81,7 +81,7 @@ class LinearCRF(nn.Module):
         for i in range(1, max_len, 1):
             scores.append(scores[-1] + self._transition_select(tags[i - 1], tags[i]) + emissions[i])
 
-        return torch.stack([scores[lens[b]-1][b] for b in range(batch_size)])
+        return torch.stack([scores[blen-1][bid] for bid, blen in enumerate(lens)])
 
     def neg_log_likelihood(self, hidden: torch.Tensor, lens: torch.Tensor, masks: torch.Tensor):
         emissions = self.hidden2emission(hidden)
@@ -117,6 +117,29 @@ class LinearCRF(nn.Module):
         best_path.reverse()
         return best_path, best_score
 
+    def batch_viterbi_decode(self, emission, lens):
+
+        seq_len, batch_size, _ = emission.size()
+        transition = self.transition.unsqueeze(0)
+        backpointers = []
+        forwards = [emission[0]]
+        for time in range(1, seq_len, 1):
+            max_var, max_id = (forwards[-1].unsqueeze(1) + transition).max(-1)
+            backpointers.append(max_id)
+            forwards.append(max_var + emission[time])
+
+        results = []
+        for sid, slen in enumerate(lens):
+            best_score, best_id = forwards[slen-1][sid].max(-1)
+            best_path = [best_id.item()]
+            for time in range(slen-2, -1, -1):
+                best_path.append(backpointers[time][sid, best_path[-1]].item())
+
+            best_path.reverse()
+
+            results.append((best_path, best_score))
+        return results
+
     def forward(self, hidden, lens):
         '''
         :param hidden: len * batch_size * hidden_dim
@@ -124,13 +147,16 @@ class LinearCRF(nn.Module):
         :return:
         '''
         emissions = self.hidden2emission(hidden)
-        return [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
+        return self.batch_viterbi_decode(emissions, lens)
+        # results = [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
+        # assert (b == e for b, e in zip(batch_results, results))
+        # return [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
 
     def predict_with_prob(self, hidden, lens):
         emissions = self.hidden2emission(hidden)
         forward_score = self._forward_score(emissions, lens)
-        predicted = [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
-
+        predicted = self.batch_viterbi_decode(emissions, lens)
+        # org_predicted = [self._viterbi_decode(emissions[:blen, bid]) for bid, blen in enumerate(lens)]
         return [(p, math.exp(logs - logz)) for (p, logs), logz in zip(predicted, forward_score.tolist())]
 
     # ------------------- only for test ---------------------
@@ -191,7 +217,11 @@ class LinearCRF(nn.Module):
 
     def nbest(self, hiddens, lens, topk=5):
         emissions = self.hidden2emission(hiddens)
-        return [self._nbest(emissions[:lens[sen_id], sen_id], topk) for sen_id in range(emissions.size(1))]
+        forward_score = self._forward_score(emissions, lens)
+        return [
+            [(path, math.exp(logs - forward_score[sen_id].item()))
+             for path, logs in self._nbest(emissions[:lens[sen_id], sen_id], topk)]
+            for sen_id in range(emissions.size(1))]
 
 
 class MaskedCRF(LinearCRF):

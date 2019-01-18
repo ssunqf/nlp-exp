@@ -114,6 +114,7 @@ class Trainer:
         counter = collections.defaultdict(float)
 
         phrase_correct, phrase_total = 0, 1e-5
+        pos_correct, pos_total = 0, 1e-5
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
@@ -134,11 +135,15 @@ class Trainer:
                                     recall[name] += len(inter) / len(gold)
 
                     for sps in phrases:
-                        for _, _, gold, pred in sps:
+                        for _, _, gold, pred, weight in sps:
                             gold, pred = gold > 0.5, pred > 0.5
                             if gold == pred:
-                                phrase_correct += 1
-                            phrase_total += 1
+                                phrase_correct += weight
+                            if gold:
+                                pos_total += weight
+                                if pred:
+                                    pos_correct += weight
+                            phrase_total += weight
 
                     if random.random() < 0.005:
                         find_phrases = self.model.list_phrase(valid_batch)
@@ -147,7 +152,7 @@ class Trainer:
                     del valid_batch
 
             scores = {n: {'acc': acc[n]/(c+1e-5), 'pre': pre[n]/(c+1e-5), 'recall': recall[n]/(c+1e-5)} for n, c in counter.items()}
-            scores['phrase'] = {'pre': phrase_correct/phrase_total}
+            scores['phrase'] = {'pre': phrase_correct/phrase_total, 'recall': pos_correct/pos_total}
             print(scores)
             return scores
 
@@ -165,13 +170,13 @@ class Trainer:
                         label.begin, label.end,
                         ''.join(text_str[label.begin:label.end]), name, gold, pred))
 
-            for begin, end, gold, pred in phrases[bid]:
-                print('(%d,%d,%s): (%f, %f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred))
+            for begin, end, gold, pred, weight in phrases[bid]:
+                print('(%d,%d,%.3f,%s): (%.3f, %.3f)' % (begin, end, weight, ''.join(text_str[begin:end]), gold, pred))
 
             if find_phrases:
                 print()
                 for begin, end, prob in find_phrases[bid]:
-                    print('(%d,%d,%s): prob=%f' % (begin, end, ''.join(text_str[begin:end]), prob))
+                    print('(%d,%d,%s): prob=%.3f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
     def train(self):
         total_batch, start = 1e-10, time.time()

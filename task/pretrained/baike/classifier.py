@@ -165,11 +165,13 @@ class ContextClassifier(nn.Module):
                     phrase_tags.append(label.tags)
 
         if len(context_tags) > 0:
-            context_length_emb = self.length_embedding(torch.LongTensor(context_lengthes, device=device))
+            context_length_emb = self.length_embedding(
+                torch.tensor(context_lengthes, dtype=torch.long, device=device))
             context_features = self.context2ffn(
                 torch.cat([context_length_emb, torch.stack(context_features, dim=0)],
                           dim=-1))
-            phrase_length_emb = self.length_embedding(torch.LongTensor(phrase_lengthes, device=device))
+            phrase_length_emb = self.length_embedding(
+                torch.tensor(phrase_lengthes, dtype=torch.long, device=device))
             phrase_features = self.phrase2ffn(
                 torch.cat([phrase_length_emb, torch.stack(phrase_features, dim=0)], dim=-1))
             return self.loss(torch.cat([context_features, phrase_features], dim=0), context_tags + phrase_tags)
@@ -201,14 +203,16 @@ class ContextClassifier(nn.Module):
 
         results = [[] for _ in range(len(labels))]
         if len(context_features) > 0:
-            context_length_emb = self.length_embedding(torch.LongTensor(context_lengthes, device=device))
+            context_length_emb = self.length_embedding(
+                torch.tensor(context_lengthes, dtype=torch.long, device=device))
             context_features = self.context2ffn(
                 torch.cat([context_length_emb, torch.stack(context_features, dim=0)], dim=-1))
             scores, indexes = self.loss.predict(context_features, 5)
             for (bid, label), topk in zip(context_tags, indexes):
                 results[bid].append((label, topk.tolist()))
 
-            phrase_length_emb = self.length_embedding(torch.LongTensor(phrase_lengthes, device=device))
+            phrase_length_emb = self.length_embedding(
+                torch.tensor(phrase_lengthes, dtype=torch.long, device=device))
             phrase_features = self.phrase2ffn(
                 torch.cat([phrase_length_emb, torch.stack(phrase_features, dim=0)], dim=-1))
             scores, indexes = self.loss.predict(phrase_features, 5)
@@ -241,7 +245,7 @@ class LMClassifier(nn.Module):
         if tied_weight is not None:
             self.context2token.weight = tied_weight
 
-    def forward(self, forwards: torch.Tensor, backwards: torch.Tensor, tokens: torch.Tensor):
+    def forward(self, forwards: torch.Tensor, backwards: torch.Tensor, tokens: torch.Tensor, lens: torch.Tensor):
         seq_len, batch_size, dim = forwards.size()
         assert dim == self.hidden_dim
         pad = forwards.new_zeros(1, batch_size, self.hidden_dim)
@@ -268,26 +272,27 @@ class PhraseClassifier(nn.Module):
     def forward(self, forwards: torch.Tensor, backwards: torch.Tensor,
                 lens: torch.Tensor, phrases: List[List[Tuple[int, int]]]) -> torch.Tensor:
 
-        samples, features, targets = self._make_sample(forwards, backwards, lens, phrases)
+        samples, features, targets, weigths = self._make_sample(forwards, backwards, lens, phrases)
         if len(samples) == 0:
             return torch.tensor([0.0], device=forwards.device)
 
-        return F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1))
+        return F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1), weight=weigths.unsqueeze(-1))
 
     def predict(self, forwards: torch.Tensor, backwards: torch.Tensor,
-                lens: torch.Tensor, phrases: List[List[Tuple[int, int]]]) -> List[List[Tuple[int, int, float, float]]]:
+                lens: torch.Tensor, phrases: List[List[Tuple[int, int]]]) -> List[List[Tuple[int, int, float, float, float]]]:
 
-        samples, features, targets = self._make_sample(forwards, backwards, lens, phrases)
+        samples, features, targets, weights = self._make_sample(forwards, backwards, lens, phrases)
         if len(samples) == 0:
             return [[] for _ in range(len(phrases))]
 
         preds = self.ffn(features)
 
         targets = targets.tolist()
+        weights = weights.tolist()
         preds = preds.squeeze().tolist()
         results = [[] for _ in range(len(phrases))]
         for id, (bid, begin, end) in enumerate(samples):
-            results[bid].append((begin, end, targets[id], preds[id]))
+            results[bid].append((begin, end, targets[id], preds[id], weights[id]))
         return results
 
     def find_phrase(self, forwards: torch.Tensor, backwards: torch.Tensor, lens: torch.Tensor,
@@ -312,32 +317,61 @@ class PhraseClassifier(nn.Module):
 
     def _make_sample(self,
                      forwards: torch.Tensor, backwards: torch.Tensor, lens: torch.Tensor,
-                     phrases: List[List[Tuple[int, int]]]) -> Tuple[List[Tuple[int, int, int]], torch.Tensor, torch.Tensor]:
+                     phrases: List[List[Tuple[int, int]]]) -> Tuple[List[Tuple[int, int, int]],
+                                                                    torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = forwards.device
 
-        samples, targets = [], []
+        positive_samples, negative_samples, boundary_samples, internal_samples = [], [], [], []
         for bid, sen_phrases in enumerate(phrases):
             for begin, end in sen_phrases:
                 if end - begin > 1:
-                    samples.append((bid, begin, end))
-                    targets.append(1)
+                    positive_samples.append((bid, begin, end))
                     for mid in range(begin, end):
                         for n_begin, n_end in [(random.randint(max(0, begin-self.max_length), begin-1), mid),
                                                (mid, random.randint(end+1, min(lens[bid], end+self.max_length)))]:
-                            if (0 <= n_begin < begin < n_end < end) or (begin < n_begin < end < n_end < lens[bid]):
-                                samples.append((bid, n_begin, n_end))
-                                targets.append(0)
+                            if (0 < n_begin < begin < n_end < end) or (begin < n_begin < end < n_end < lens[bid]):
+                                negative_samples.append((bid, n_begin, n_end))
 
+                            # noise
+                            if 0 < n_begin < begin:
+                                boundary_samples.append((bid, n_begin, end))
+                            if end < n_end < lens[bid]:
+                                boundary_samples.append((bid, begin, n_end))
+
+                        if begin < mid < end:
+                            internal_samples.append((bid, begin, mid))
+                            internal_samples.append((bid, mid, end))
+
+        samples = positive_samples + negative_samples + boundary_samples + internal_samples
         if len(samples) > 0:
+            targets = [1] * len(positive_samples) + [0] * (len(samples) - len(positive_samples))
             features = torch.stack(
                 [self._span_embed(forwards[:, bid], backwards[:, bid], begin, end)
                  for bid, begin, end in samples], dim=0)
-            targets = torch.tensor(targets, dtype=torch.float, device=forwards.device)
-        else:
-            features = torch.tensor([], device=forwards.device)
-            targets = torch.tensor([], device=forwards.device)
+            targets = torch.tensor(targets, dtype=torch.float, device=device)
 
-        return samples, features, targets
+            positive_weights = torch.tensor([1] * len(positive_samples), dtype=torch.float, device=device)
+            negative_weights = torch.tensor([1] * len(negative_samples), dtype=torch.float, device=device)
+            boundary_weights = torch.tensor([1] * len(boundary_samples), dtype=torch.float, device=device)
+            internal_weights = torch.tensor([1] * len(internal_samples), dtype=torch.float, device=device)
+
+            negative_weights = negative_weights * (positive_weights.sum() / negative_weights.sum())
+
+            positive_total = positive_weights.sum()
+            weights = torch.cat([
+                positive_weights,
+                negative_weights * (positive_total / negative_weights.sum()),
+                boundary_weights * (positive_total * 0.4 / boundary_weights.sum()),
+                internal_weights * (positive_total * 0.6 / internal_weights.sum())
+            ], dim=-1)
+        else:
+            features = torch.tensor([], device=device)
+            targets = torch.tensor([], device=device)
+            weights = torch.tensor([], device=device)
+
+        return samples, features, targets, weights
 
     def _span_embed(self, forwards: torch.Tensor, backwards: torch.Tensor, begin: int, end: int):
+        assert 0 < begin < end < forwards.size(0)
         return torch.cat([forwards[begin-1], forwards[end-1],
                           backwards[end], backwards[begin]], dim=-1)

@@ -269,19 +269,7 @@ class ElmoEncoder(nn.Module):
 
     def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        forward_h, (f_h, f_c) = self.forwards(input)
-
-        backward_input = input.clone()
-        for bid, blen in enumerate(lens):
-            backward_input[:blen, bid] = input[:blen, bid].flip([0])
-
-        reversed_backward_h, (b_h, b_c) = self.backwards(input)
-
-        backward_h = reversed_backward_h.clone()
-        for bid, blen in enumerate(lens):
-            backward_h[:blen, bid] = reversed_backward_h[:blen, bid].flip([0])
-
-        return forward_h, backward_h
+        return self.forwards(input)[0], self.backwards(input.flip([0]))[0].flip([0])
 
     def encoder_word(self, input: torch.Tensor, lens: torch.Tensor, word_ids: List[List[Tuple[int, int]]]):
         forward_h, backward_h = self.forward(input, lens)

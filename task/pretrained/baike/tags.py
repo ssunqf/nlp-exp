@@ -4,7 +4,7 @@ import math
 from typing import List, Tuple, Dict
 from collections import Counter, OrderedDict
 from jieba import posseg
-from .base import to_BMES, mixed_open
+from .base import to_bmes, mixed_open
 import torch
 from torch import nn
 from torchtext import data
@@ -22,7 +22,7 @@ class JiebaTagger(Tagger):
     def tag(self, sentence: List[str]) -> Tuple[List[str], List[float]]:
         tags = []
         for word, type in posseg.cut(''.join(sentence)):
-            tags.extend(to_BMES(len(word), type))
+            tags.extend(to_bmes(len(word), type))
         return tags, [1.0] * len(sentence)
 
 
@@ -39,7 +39,7 @@ class DictTagger(Tagger):
         for begin in range(len(sentence)):
             for end in range(min(begin+self.max_length, len(sentence)), begin, -1):
                 if sentence[begin:end] in self.words:
-                    for id, tag in zip(range(begin, end), to_BMES(end-begin, self.name)):
+                    for id, tag in zip(range(begin, end), to_bmes(end - begin, self.name)):
                         if tags[id] is None or tags[id][0:2] in {'M_', 'O_'}:
                             tags[id] = tag
 
@@ -79,7 +79,7 @@ class DictWithTypeTagger(Tagger):
                 prob_with_type = self.words.get(sentence[begin:end], None)
                 if prob_with_type:
                     prob, type = prob_with_type
-                    for id, tag in zip(range(begin, end), to_BMES(end - begin, type)):
+                    for id, tag in zip(range(begin, end), to_bmes(end - begin, type)):
                         if tags[id] is None or tags[id][0:2] in {'M_', 'O_'}:
                             tags[id] = tag
                             probs[id] = prob
@@ -112,7 +112,7 @@ class RadicalTagger(Tagger):
         self.data = data
 
     def tag(self, sentence: List[str]) -> Tuple[List[str], List[float]]:
-        return [self.data.get(token, 'None') for token in sentence]
+        return [self.data.get(token, 'None') for token in sentence], [1.0] * len(sentence)
 
     @classmethod
     def load(cls, path):
@@ -185,6 +185,90 @@ class TagField(data.Field):
         return batch_tags, batch_probs
 
 
+class NgramTagger(Tagger):
+    def __init__(self, name, words, max_length):
+        super(NgramTagger, self).__init__()
+        self.name = name
+        self.words = words
+        self.max_length = max_length
+        self.max_gram_len = min(self.max_length, 5)
+
+        self.stats = Counter()
+
+    def default_tag(self):
+        return [0] * self.dim()
+
+    def dim(self):
+        return self.max_gram_len * 2 - 1
+
+    def tag(self, sentence: List[str]) -> List[List[int]]:
+        tags = [self.default_tag()] * len(sentence)
+        sentence = ''.join(sentence)
+        for begin in range(len(sentence)):
+            for end in range(begin+1, min(begin+self.max_length, len(sentence))):
+                if sentence[begin:end] in self.words:
+                    self.stats.update([end-begin])
+                    gram_len = min(end - begin, self.max_gram_len)
+                    if gram_len == 1:
+                        tags[begin][0] = 1
+                    else:
+                        tags[begin][2*gram_len-3] = 1
+                        tags[end-1][2*gram_len-2] = 1
+
+        return tags
+
+    def print_stats(self):
+        print('%s: %s' % (self.name,
+                          '\t'.join(['len_%d=%d' % (k, v) for k, v in self.stats.most_common()])))
+
+    @classmethod
+    def load(cls, name, path, sep='\t'):
+        words = set()
+        max_length = 0
+        with mixed_open(path) as file:
+            for lineno, line in enumerate(file, 1):
+                line = line.strip()
+                if sep is None:
+                    word = line
+                else:
+                    word, *_ = line.split(sep)
+
+                words.add(word)
+                max_length = max(max_length, len(word))
+
+        return cls(name, words, max_length)
+
+
+class NgramField(data.Field):
+    def __init__(self, tagger: NgramTagger, has_init=True, has_eos=True, *args, **kwargs):
+        super(NgramField, self).__init__(*args, **kwargs)
+        self.tagger = tagger
+        self.sequential = True
+        self.has_init = has_init
+        self.has_eos = has_eos
+
+    @property
+    def name(self):
+        return self.tagger.name
+
+    def process(self, batch: List[List[str]], device=None):
+        batch_size = len(batch)
+        lens = [len(sen) for sen in batch]
+        seq_len = max(lens) + 2
+        batch_tags = torch.zeros(seq_len, batch_size, self.tagger.dim(), dtype=torch.float, device=device)
+        for bid, sentence in enumerate(batch):
+            tags = self.tagger.tag(sentence)
+            batch_tags[:, bid] = torch.tensor(
+                [self.tagger.default_tag()] + \
+                tags + \
+                [self.tagger.default_tag()] +
+                [self.tagger.default_tag()] * (seq_len - len(sentence) - 2),
+                dtype=torch.float,
+                device=device)
+
+        return batch_tags
+
+
 class TagEmbedding(nn.Module):
     def __init__(self, name, tag_size, tag_dim, padding_idx):
         super(TagEmbedding, self).__init__()
@@ -208,3 +292,11 @@ idioms = DictTagger.load('idioms', './gazetteers/idioms.txt')
 organizations = DictTagger.load('organization', './gazetteers/org.all', None)
 
 radical = RadicalTagger.load('./gazetteers/radicals.txt')
+
+
+digit_ngram = NgramTagger.load('digit', './gazetteers/chnDigit.dic')
+quantifier_ngram = NgramTagger.load('quantifier', './gazetteers/chnQuantifier.dic')
+idioms_ngram = NgramTagger.load('idioms', './gazetteers/idioms.txt')
+place_ngram = NgramTagger.load('place', './gazetteers/chnPlace.dic')
+person_ngram = NgramTagger.load('name', './gazetteers/chnName.dic')
+org_ngram = NgramTagger.load('org', './gazetteers/org.all', None)
