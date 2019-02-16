@@ -227,7 +227,7 @@ if __name__ == '__main__':
             with mixed_open(output_path, 'wt') as output:
                 for line in tqdm(data):
                     words, labels = labeler.label(line)
-                    if len(labels) > 0:
+                    if 10 < len(words) < 300 and (len(labels) == 0 or labels[0].end - labels[0].begin < len(words)):
                         output.write('%s\t\t%s\n' % (
                             ''.join(words),
                             '\t\t'.join(l.to_json() for l in labels)))

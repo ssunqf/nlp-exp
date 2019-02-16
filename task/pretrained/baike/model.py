@@ -53,7 +53,7 @@ class Model(nn.Module):
         losses['phrase'] = self.phrase_classifier(forward_h, backward_h, lens, phrases)
 
         if self.lm_classifier is not None:
-            losses['lm'] = self.lm_classifier(forward_h, backward_h, text)
+            losses['lm'] = self.lm_classifier(forward_h, backward_h, text, lens)
 
         return losses, lens.size(0)
 
@@ -63,7 +63,7 @@ class Model(nn.Module):
         for classifier in self.label_classifiers:
             yield from classifier.named_embeddings()
 
-    def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float]]], int]:
+    def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List[List[Tuple[int, int, float, float, float]]], int]:
         text, lens = data.text
 
         phrases = self._collect_phrase(data)
@@ -82,7 +82,7 @@ class Model(nn.Module):
     def list_phrase(self, data: data.Batch):
         text, lens = data.text
         forward_h, backward_h = self.encoder(self.embedding(text), lens)
-        phrases = self.phrase_classifier.find_phrase(forward_h, backward_h, lens)
+        phrases = self.phrase_classifier.find_phrase(forward_h, backward_h, lens, threshold=0.6)
 
         return phrases
 
