@@ -190,14 +190,15 @@ class Labeler:
 
 def listfile(path: str):
     if os.path.isdir(path):
-        return [os.path.join(path, name) for name in os.listdir(path)]
+        for name in os.listdir(path):
+            yield from listfile(os.path.join(path, name))
     else:
         dir, prefix = os.path.split(path)
         if len(dir) == 0:
             dir = './'
-        return [os.path.join(dir, name)
-                for name in os.listdir(dir) if name.startswith(prefix)]
-
+        for name in os.listdir(dir):
+            if name.startswith(prefix):
+                yield os.path.join(dir, name)
 
 
 if __name__ == '__main__':
@@ -227,7 +228,7 @@ if __name__ == '__main__':
             with mixed_open(output_path, 'wt') as output:
                 for line in tqdm(data):
                     words, labels = labeler.label(line)
-                    if len(labels) > 0:
+                    if 10 < len(words) < 300 and (len(labels) == 0 or labels[0].end - labels[0].begin < len(words)):
                         output.write('%s\t\t%s\n' % (
                             ''.join(words),
                             '\t\t'.join(l.to_json() for l in labels)))
