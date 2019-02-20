@@ -599,7 +599,7 @@ class FineTrainer:
 
         loss, num_sen = self.model.criterion(batch)
         rloss = loss.item()
-        (loss * scale).div(num_sen).backward()
+        (loss / num_sen).backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
@@ -642,7 +642,7 @@ class FineTrainer:
 
         for step, batch in tqdm(enumerate(self.train_it, start=1), total=len(self.train_it)):
 
-            loss, num_sen = self.train_one(batch, scale=1.0)
+            loss, num_sen = self.train_one(batch)
 
             del batch
 

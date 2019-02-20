@@ -257,13 +257,20 @@ class StackLSTM(nn.Module):
 
 
 class ElmoEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int, mode='LSTM', dropout=0.3):
+    def __init__(self,
+                 input_dim: int,
+                 hidden_dim: int,
+                 num_layers: int,
+                 mode='LSTM',
+                 require_grad=True,
+                 dropout=0.3):
         super(ElmoEncoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
         self.mode = mode
+        self.require_grad = require_grad
         self.dropout = nn.Dropout(dropout)
 
         self.forwards = nn.ModuleList(

@@ -52,15 +52,15 @@ class Model(nn.Module):
         for classifier in self.label_classifiers:
             yield classifier.named_embedding()
 
-    def predict(self, data: data.Batch) -> Tuple[Dict[str, List], int]:
+    def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List]:
         text, lens = data.text
 
         forward_h, backward_h = self.encoder(self.embedding(text), lens)
 
-        results = defaultdict(list)
+        label_results = defaultdict(list)
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            results.update(classifier.predict(forward_h, backward_h, labels))
-
-        return results, lens.size(0)
+            label_results.update(classifier.predict(forward_h, backward_h, labels))
+        lm_result = self.lm_classifier.predict(forward_h, backward_h)
+        return label_results, lm_result
 

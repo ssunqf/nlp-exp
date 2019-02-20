@@ -126,10 +126,10 @@ class Trainer:
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
-                    results, batch_size = self.model.predict(valid_batch)
-                    valid_tqdm.update(batch_size)
+                    label_results, lm_result = self.model.predict(valid_batch)
+                    valid_tqdm.update(len(valid_batch))
 
-                    for label_name, label_result in results.items():
+                    for label_name, label_result in label_results.items():
                         for sub_name, sub_result in label_result.items():
                             name = '%s_%s' % (label_name, sub_name)
                             for sen_res in sub_result:
@@ -145,7 +145,7 @@ class Trainer:
                                         recall[name] += len(inter) / len(gold)
 
                     if random.random() < 0.005:
-                        self.pretty_print(valid_batch, results)
+                        self.pretty_print(valid_batch, label_results, lm_result)
 
                     del valid_batch
 
@@ -153,12 +153,14 @@ class Trainer:
             print(scores)
             return scores
 
-    def pretty_print(self, batch, label_results):
+    def pretty_print(self, batch, label_results, lm_result):
         text, lens = batch.text
         for bid in range(lens.size(0)):
             text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
             print()
             print(text_str)
+            predict_str = [INIT_TOKEN] + [self.text_voc.itos[w] for w in lm_result[:lens[bid]-2, bid]] + [EOS_TOKEN]
+            print(predict_str)
             for label_name, label_result in label_results.items():
                 for sub_name, sub_result in label_result.items():
                     name = '%s_%s' % (label_name, sub_name)
@@ -189,7 +191,7 @@ class Trainer:
         num_iterations = 0
         for train_it, valid_it in tqdm(self.dataset_it, desc='dataset'):
             for pool in self.pool_dataset(train_it):
-                num_iterations += len(pool)
+                num_iterations += 1
                 losses = self.acc_train_one(pool)
 
                 label_losses.update(losses)
@@ -222,7 +224,7 @@ class Trainer:
                     total_batch, start = 1e-10, time.time()
                     label_losses = Counter()
 
-                if num_iterations % (self.valid_step * 5) == 0:
+                if num_iterations % (self.valid_step * 1) == 0:
                     for tag, mat, metadata in self.model.named_embeddings():
                         '''
                         if len(metadata) > self.config.projector_max_size:
@@ -304,11 +306,12 @@ class Trainer:
         def batch_size_fn(new, count, sofar):
             return sofar + (len(new.text) + 99)//100
 
-        dataset_it = lazy_iter(fields, config.train_file,
+        dataset_it = lazy_iter(fields,
+                               path=config.root, data_prefix=config.train_prefix, valid_file=config.valid_file,
                                batch_size=config.batch_size,
-                               path=config.root,
                                batch_size_fn=batch_size_fn,
                                device=config.device)
+
         return dataset_it
 
     @classmethod
@@ -324,12 +327,14 @@ class Trainer:
                               dropout=0.5)
 
         lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
-                                     embedding.weight, padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+                                     padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
         label_classifiers = nn.ModuleList([
             ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
-        model = Model(text_field.vocab, embedding,
-                      encoder, lm_classifier,
+        model = Model(text_field.vocab,
+                      embedding,
+                      encoder,
+                      lm_classifier,
                       label_classifiers)
 
         model.to(config.device)
@@ -362,7 +367,8 @@ class Trainer:
 class Config:
     def __init__(self, output_dir=None):
         self.root = './baike/preprocess-char'
-        self.train_file = 'sentence.url'
+        self.train_prefix = 'sentence.url'
+        self.valid_file = 'valid.gz'
 
         self.voc_max_size = 50000
         self.voc_min_freq = 50
@@ -383,7 +389,7 @@ class Config:
 
         self.label_dim = 128
 
-        self.valid_step = 200
+        self.valid_step = 20
 
         self.batch_size = 16
 

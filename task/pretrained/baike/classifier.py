@@ -148,10 +148,9 @@ class ContextClassifier(nn.Module):
 
 class LMClassifier(nn.Module):
     def __init__(self,
-                 voc_size,
-                 voc_dim,
-                 hidden_dim,
-                 tied_weight: nn.Embedding=None,
+                 voc_size: int,
+                 voc_dim: int,
+                 hidden_dim: int,
                  padding_idx=-1,
                  dropout=0.3):
         super(LMClassifier, self).__init__()
@@ -166,8 +165,6 @@ class LMClassifier(nn.Module):
         )
 
         self.context2token = nn.Linear(voc_dim, voc_size)
-        if tied_weight is not None:
-            self.context2token.weight = tied_weight
 
         self.inv_temperature = nn.Parameter(torch.tensor([1.0], dtype=torch.float))
 
@@ -178,14 +175,21 @@ class LMClassifier(nn.Module):
                 lens: torch.Tensor) -> Dict[str, torch.Tensor]:
         seq_len, batch_size, dim = forwards.size()
         assert dim == self.hidden_dim
-        pad = forwards.new_zeros(1, batch_size, self.hidden_dim)
-        features = torch.cat(
-            (torch.cat((pad, forwards[:-1]), dim=0),
-             torch.cat((backwards[1:], pad), dim=0)), dim=-1)
+        middle = torch.cat((forwards[:-2], backwards[2:]), dim=-1)
 
-        features = self.context2token(self.context_ffn(features))
+        logit = self.context2token(self.context_ffn(middle)) * self.inv_temperature
         return {
-            'loss': F.cross_entropy(features.view(-1, self.voc_size) * self.inv_temperature,
-                                    tokens.view(-1),
-                                    ignore_index=self.padding_idx)
+            'loss': F.cross_entropy(logit.view(-1, self.voc_size),
+                                    tokens[1:-1].view(-1),
+                                    ignore_index=self.padding_idx),
         }
+
+    def predict(self,
+                forwards: torch.Tensor,
+                backwards: torch.Tensor) -> torch.Tensor:
+        seq_len, batch_size, dim = forwards.size()
+        assert dim == self.hidden_dim
+        middle = torch.cat((forwards[:-2], backwards[2:]), dim=-1)
+
+        logit = self.context2token(self.context_ffn(middle)) * self.inv_temperature
+        return logit.max(dim=-1)[1]
