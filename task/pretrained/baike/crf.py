@@ -34,7 +34,9 @@ class LinearCRF(nn.Module):
         super(LinearCRF, self).__init__()
 
         self.hidden2emission = nn.Sequential(
-            nn.Linear(hidden_size, num_tags)
+            nn.Linear(hidden_size, hidden_size//2),
+            nn.ReLU(),
+            nn.Linear(hidden_size//2, num_tags)
         )
 
         self._transition = nn.Parameter(

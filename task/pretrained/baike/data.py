@@ -61,12 +61,12 @@ class BaikeDataset(Dataset):
         examples = []
         with gzip.open(path, mode='rt', compresslevel=6) as file:
             for line in tqdm(file, desc=('load dataset from %s' % path)):
-                chars, *labels = line.split('\t\t')
+                chars, *labels = line.strip().split('\t\t')
                 # words = words.split(' ')
                 chars = list(chars)
                 try:
-                    labels = [PhraseLabel.from_json(label) for label in labels]
-                    if len(labels) > 0 and len(chars) < 300 and (labels[0].end - labels[0].begin < len(chars)):
+                    labels = [PhraseLabel.from_json(label) for label in labels if len(label) > 0]
+                    if 10 < len(chars) < 300 and (len(labels) == 0 or labels[0].end - labels[0].begin < len(chars)):
                         chars = np.array(chars, dtype=np.str)
                         # labels = np.array([l.to_np() for l in labels], dtype=PhraseLabel.get_type())
                         examples.append(data.Example.fromlist([chars, labels], fields))

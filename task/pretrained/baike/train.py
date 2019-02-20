@@ -8,6 +8,7 @@ import os
 import random
 import time
 from typing import Dict, Tuple
+from collections import Counter
 
 from tabulate import tabulate
 
@@ -20,7 +21,7 @@ from tqdm import tqdm
 from task.pretrained.transformer.attention import TransformerLayer
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
 from .embedding import WindowEmbedding
-from .classifier import LabelClassifier, ContextClassifier, PhraseClassifier, LMClassifier
+from .classifier import ContextClassifier, LMClassifier
 from .data import Field, LabelField, lazy_iter
 from .encoder import StackLSTM, ElmoEncoder
 from .model import Model
@@ -34,7 +35,11 @@ class Trainer:
                  valid_step, checkpoint_dir):
         self.config = config
         self.model = model
-        self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-6)
+
+        self.shared_optimizer = optim.Adam(list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()), 1e-3, weight_decay=1e-6)
+        self.task_optimizers = dict((task.name, optim.Adam(task.parameters(), 1e-3, weight_decay=1e-6))
+                                     for task in self.model.label_classifiers)
+        self.task_optimizers['lm'] = optim.Adam(self.model.lm_classifier.parameters(), 1e-3, weight_decay=1e-6)
 
         self.dataset_it = dataset_it
 
@@ -51,8 +56,8 @@ class Trainer:
 
         states = collections.OrderedDict()
         states['model'] = self.model.state_dict()
-        if optimizer:
-            states['optimizer'] = self.optimizer.state_dict()
+        # if optimizer:
+        #     states['optimizer'] = self.optimizer.state_dict()
         # if train:
         #    states['train_it'] = self.train_it.state_dict()
 
@@ -71,24 +76,29 @@ class Trainer:
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 
-    def train_one(self, batch) -> Tuple[Dict[str, float], int]:
+    def acc_train_one(self, pool: list):
+
         self.model.train()
         self.model.zero_grad()
-
-        losses, batch_size = self.model(batch)
-        rloss = {n: l.item() for n, l in losses.items()}
-
-        loss = sum(loss for name, loss in losses.items())
-        if loss.requires_grad is False:
-            return rloss, batch_size
-
-        loss.backward()
+        losses = Counter()
+        for batch in pool:
+            _losses, _batch_size = self.model(batch)
+            losses.update(_losses)
+            loss = sum(l for l in _losses.values()) / len(pool)
+            if loss.requires_grad:
+                loss.backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
-        self.optimizer.step()
-        return rloss, batch_size
+
+        self.shared_optimizer.step()
+        for name, loss in losses.items():
+            if loss.requires_grad:
+                self.task_optimizers[name].step()
+
+        self.model.zero_grad()
+        return losses
 
     def valid(self, valid_it) -> Dict[str, float]:
         self.model.eval()
@@ -113,137 +123,126 @@ class Trainer:
         acc, pre, recall = [collections.defaultdict(float) for _ in range(3)]
         counter = collections.defaultdict(float)
 
-        phrase_correct, phrase_total = 0, 1e-5
-        pos_correct, pos_total = 0, 1e-5
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
-                    results, phrases, batch_size = self.model.predict(valid_batch)
+                    results, batch_size = self.model.predict(valid_batch)
                     valid_tqdm.update(batch_size)
 
-                    for name, result in results.items():
-                        for sen_res in result:
-                            for label, pred in sen_res:
-                                if label.tags.size(0) > 0:
-                                    counter[name] += 1
-                                    gold = set(label.tags.tolist())
-                                    pred = set(pred)
-                                    inter = gold.intersection(pred)
-                                    union = gold.union(pred)
-                                    acc[name] += len(inter) / len(union)
-                                    pre[name] += len(inter) / len(pred)
-                                    recall[name] += len(inter) / len(gold)
-
-                    for sps in phrases:
-                        for _, _, gold, pred, weight in sps:
-                            gold, pred = gold > 0.5, pred > 0.5
-                            if gold == pred:
-                                phrase_correct += weight
-                            if gold:
-                                pos_total += weight
-                                if pred:
-                                    pos_correct += weight
-                            phrase_total += weight
+                    for label_name, label_result in results.items():
+                        for sub_name, sub_result in label_result.items():
+                            name = '%s_%s' % (label_name, sub_name)
+                            for sen_res in sub_result:
+                                for label, pred in sen_res:
+                                    if label.tags.size(0) > 0:
+                                        counter[name] += 1
+                                        gold = set(label.tags.tolist())
+                                        pred = set(pred)
+                                        inter = gold.intersection(pred)
+                                        union = gold.union(pred)
+                                        acc[name] += len(inter) / len(union)
+                                        pre[name] += len(inter) / len(pred)
+                                        recall[name] += len(inter) / len(gold)
 
                     if random.random() < 0.005:
-                        find_phrases = self.model.list_phrase(valid_batch)
-                        self.pretty_print(valid_batch, results, phrases, find_phrases)
+                        self.pretty_print(valid_batch, results)
 
                     del valid_batch
 
             scores = {n: {'acc': acc[n]/(c+1e-5), 'pre': pre[n]/(c+1e-5), 'recall': recall[n]/(c+1e-5)} for n, c in counter.items()}
-            scores['phrase'] = {'pre': phrase_correct/phrase_total, 'recall': pos_correct/pos_total}
             print(scores)
             return scores
 
-    def pretty_print(self, batch, label_results, phrases, find_phrases=None):
+    def pretty_print(self, batch, label_results):
         text, lens = batch.text
         for bid in range(lens.size(0)):
             text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
             print()
             print(text_str)
-            for name, result in label_results.items():
-                for label, pred in result[bid]:
-                    gold = set(self.label_vocabs[name].itos[i] for i in label.tags.tolist())
-                    pred = set(self.label_vocabs[name].itos[i] for i in pred)
-                    print('(%d,%d,%s): (%s, %s, %s)' % (
-                        label.begin, label.end,
-                        ''.join(text_str[label.begin:label.end]), name, gold, pred))
+            for label_name, label_result in label_results.items():
+                for sub_name, sub_result in label_result.items():
+                    name = '%s_%s' % (label_name, sub_name)
+                    for label, pred in sub_result[bid]:
+                        gold = set(self.label_vocabs[label_name].itos[i] for i in label.tags.tolist())
+                        pred = set(self.label_vocabs[label_name].itos[i] for i in pred)
+                        print('(%d,%d,%s): (%s, %s, %s)' % (
+                            label.begin, label.end,
+                            ''.join(text_str[label.begin:label.end]), name, gold, pred))
 
-            for begin, end, gold, pred, weight in phrases[bid]:
-                print('(%d,%d,%.3f,%s): (%.3f, %.3f)' % (begin, end, weight, ''.join(text_str[begin:end]), gold, pred))
+    def pool_dataset(self, dataset_it, pool_size=10):
 
-            if find_phrases:
-                print()
-                for begin, end, prob in find_phrases[bid]:
-                    print('(%d,%d,%s): prob=%.3f' % (begin, end, ''.join(text_str[begin:end]), prob))
+        with tqdm(total=len(dataset_it.dataset), desc='train') as train_tqdm:
+            pool = []
+            for batch in dataset_it:
+                train_tqdm.update(len(batch))
+                if len(pool) >= pool_size:
+                    yield pool
+                    pool = []
+                pool.append(batch)
+
+            if len(pool) > 0:
+                yield pool
 
     def train(self):
         total_batch, start = 1e-10, time.time()
-        label_losses = collections.defaultdict(float)
+        label_losses = Counter()
         num_iterations = 0
         for train_it, valid_it in tqdm(self.dataset_it, desc='dataset'):
-            with tqdm(total=len(train_it.dataset), desc='train') as train_tqdm:
-                for batch in train_it:
-                    num_iterations += 1
-                    losses, batch_size = self.train_one(batch)
-                    train_tqdm.update(batch_size)
+            for pool in self.pool_dataset(train_it):
+                num_iterations += 1
+                losses = self.acc_train_one(pool)
 
-                    for n, l in losses.items():
-                        label_losses[n] += l
+                label_losses.update(losses)
 
-                    del batch
+                total_batch += len(pool)
 
-                    total_batch += 1
+                if num_iterations % self.valid_step == 0:
 
-                    if num_iterations % self.valid_step == 0:
+                    valid_losses = self.valid(valid_it)
+                    total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
 
-                        valid_losses = self.valid(valid_it)
-                        total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
+                    self.checkpoint(num_iterations, total_valid_loss)
 
-                        self.checkpoint(num_iterations, total_valid_loss)
+                    label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
 
-                        label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
+                    self.summary_writer.add_scalars(
+                        'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)},
+                        num_iterations)
+                    self.summary_writer.add_scalars(
+                        'loss', {('train_%s' % n) : l for n, l in label_losses.items()},
+                        num_iterations)
 
+                    self.summary_writer.add_scalars(
+                        'loss', {'valid_mean_loss': total_valid_loss},
+                        num_iterations)
+                    self.summary_writer.add_scalars(
+                        'loss', {('valid_%s' % n) : l for n, l in valid_losses.items()},
+                        num_iterations)
+
+                    total_batch, start = 1e-10, time.time()
+                    label_losses = Counter()
+
+                if num_iterations % (self.valid_step * 5) == 0:
+                    for tag, mat, metadata in self.model.named_embeddings():
+                        '''
+                        if len(metadata) > self.config.projector_max_size:
+                            half_size = self.config.projector_max_size // 2
+                            mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
+                            metadata = metadata[:half_size] + metadata[-half_size:]
+                        '''
+                        mat = mat[:self.config.projector_max_size]
+                        metadata = metadata[:self.config.projector_max_size]
+                        metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
+                        self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
+
+                    for n, scores in self.metrics(valid_it).items():
                         self.summary_writer.add_scalars(
-                            'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)},
-                            num_iterations)
-                        self.summary_writer.add_scalars(
-                            'loss', {('train_%s_loss' % n) : l for n, l in label_losses.items()},
+                            'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()},
                             num_iterations)
 
-                        self.summary_writer.add_scalars(
-                            'loss', {'valid_mean_loss': total_valid_loss},
-                            num_iterations)
-                        self.summary_writer.add_scalars(
-                            'loss', {('valid_%s_loss' % n) : l for n, l in valid_losses.items()},
-                            num_iterations)
-
-                        total_batch, start = 1e-10, time.time()
-                        label_losses = collections.defaultdict(float)
-
-                    if num_iterations % (self.valid_step * 5) == 0:
-                        for tag, mat, metadata in self.model.named_embeddings():
-                            '''
-                            if len(metadata) > self.config.projector_max_size:
-                                half_size = self.config.projector_max_size // 2
-                                mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
-                                metadata = metadata[:half_size] + metadata[-half_size:]
-                            '''
-                            mat = mat[:self.config.projector_max_size]
-                            metadata = metadata[:self.config.projector_max_size]
-                            metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
-                            self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
-
-                    if train_it.iterations % (self.valid_step) == 0:
-                        for n, scores in self.metrics(valid_it).items():
-                            self.summary_writer.add_scalars(
-                                'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()},
-                                num_iterations)
-
-                # reset optimizer
-                # if self.train_it.iterations > self.config.warmup_step:
-                #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
+            # reset optimizer
+            # if self.train_it.iterations > self.config.warmup_step:
+            #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
     def checkpoint(self, num_iterations, valid_loss):
         torch.save(self.state_dict(),
@@ -272,7 +271,7 @@ class Trainer:
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
-        ENTITY_LABEL = LabelField('entity')
+        # ENTITY_LABEL = LabelField('entity')
         TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'),
                          max_size=config.voc_max_size,
                          min_freq=config.voc_min_freq)
@@ -285,17 +284,17 @@ class Trainer:
         SUB_LABEL.build_vocab(os.path.join(config.root, 'subtitle.voc.gz'),
                               max_size=config.subtitle_max_size,
                               min_freq=config.subtitle_min_freq)
-        ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'),
-                                 max_size=config.entity_max_size,
-                                 min_freq=config.entity_min_freq)
+        # ENTITY_LABEL.build_vocab(os.path.join(config.root, 'entity.voc.gz'),
+        #                         max_size=config.entity_max_size,
+        #                         min_freq=config.entity_min_freq)
 
         print('text vocab size = %d' % len(TEXT.vocab))
         print('key vocab size = %d' % len(KEY_LABEL.vocab))
         print('attr vocab size = %d' % len(ATTR_LABEL.vocab))
         print('subtitle vocab size = %d' % len(SUB_LABEL.vocab))
-        print('entity vocab size = %d' % len(ENTITY_LABEL.vocab))
+        # print('entity vocab size = %d' % len(ENTITY_LABEL.vocab))
 
-        return TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL
+        return TEXT, [KEY_LABEL, ATTR_LABEL, SUB_LABEL] #, ENTITY_LABEL]
 
     @staticmethod
     def load_dataset(config, fields):
@@ -313,29 +312,7 @@ class Trainer:
         return dataset_it
 
     @classmethod
-    def load_lstm_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
-
-        embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
-                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
-
-        encoder = StackLSTM(config.embedding_size,
-                            config.encoder_hidden_dim, config.encoder_cell_dim, config.encoder_num_layers,
-                            residual=False, dropout=0.5)
-
-        label_classifiers = nn.ModuleList([
-            LabelClassifier(name, config.classifier_loss, field.vocab, config.encoder_size, config.label_size)
-            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
-        phrase_classifier = PhraseClassifier(config.encoder_size)
-        model = Model(text_field.vocab, embedding,
-                      encoder,
-                      label_classifiers, phrase_classifier, config.phrase_mask_prob)
-
-        model.to(config.device)
-
-        return model
-
-    @classmethod
-    def load_elmo_model(cls, config, text_field, key_field, attr_field, sub_field, entity_field):
+    def load_model(cls, config, text_field, label_fields):
 
         embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
                                     padding_idx=text_field.vocab.stoi[PAD_TOKEN])
@@ -343,21 +320,17 @@ class Trainer:
         encoder = ElmoEncoder(config.embedding_dim,
                               config.encoder_hidden_dim,
                               config.encoder_num_layers,
+                              mode=config.encoder_mode,
                               dropout=0.5)
 
         lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
                                      embedding.weight, padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
-        phrase_length_embedding = nn.Embedding(config.phrase_length_max, config.phrase_length_dim)
         label_classifiers = nn.ModuleList([
-            ContextClassifier(name, field.vocab, config.encoder_hidden_dim, config.label_dim,
-                              phrase_length_embedding,
-                              focal_loss_gamma=config.focal_loss_gamma)
-            for name, field in [('keys', key_field), ('attrs', attr_field), ('subtitles', sub_field), ('entity', entity_field)]])
-        phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
+            ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
         model = Model(text_field.vocab, embedding,
                       encoder, lm_classifier,
-                      label_classifiers, phrase_classifier, config.phrase_mask_prob)
+                      label_classifiers)
 
         model.to(config.device)
 
@@ -365,9 +338,9 @@ class Trainer:
 
     @classmethod
     def create(cls, config, checkpoint=None):
-        TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL = cls.load_voc(config)
+        TEXT, label_fields = cls.load_voc(config)
 
-        fields = [('text', TEXT), (('keys', 'attrs', 'subtitles', 'entity'), (KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL))]
+        fields = [('text', TEXT), (tuple(field.name for field in label_fields), tuple(label_fields))]
 
         # train_it, valid_it = BaikeDataset.iters(
         #    fields, path=config.root, train=config.train_file, device=config.device)
@@ -375,16 +348,11 @@ class Trainer:
 
         dataset_it = cls.load_dataset(config, fields)
 
-        if config.encoder_mode.lower() == 'lstm':
-            model = cls.load_lstm_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
-        elif config.encoder_mode.lower() == 'elmo':
-            model = cls.load_elmo_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
-        else:
-            config.load_trans_model(config, TEXT, KEY_LABEL, ATTR_LABEL, SUB_LABEL, ENTITY_LABEL)
+        model = cls.load_model(config, TEXT, label_fields)
 
         trainer = cls(config, model, dataset_it,
             TEXT.vocab,
-            {'keys': KEY_LABEL.vocab, 'attrs': ATTR_LABEL.vocab, 'subtitles': SUB_LABEL.vocab, 'entity': ENTITY_LABEL.vocab},
+            dict((field.name, field.vocab) for field in label_fields),
             config.valid_step, config.checkpoint_dir)
         if checkpoint:
             trainer.load_checkpoint(checkpoint)
@@ -393,8 +361,8 @@ class Trainer:
 
 class Config:
     def __init__(self, output_dir=None):
-        self.root = './baike/preprocess-char'
-        self.train_file = 'sentence.url'
+        self.root = './baike/large'
+        self.train_file = 'large'
 
         self.voc_max_size = 50000
         self.voc_min_freq = 50
@@ -407,20 +375,13 @@ class Config:
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 512
-        self.encoder_mode = 'elmo'  # ['lstm', 'elmo', 'transformer']
+        self.embedding_dim = 1024
+        self.encoder_mode = 'LSTM'  # ['RNN', 'LSTM', 'GRU']
         self.encoder_hidden_dim = 1024
-        self.encoder_num_layers = 3
+        self.encoder_num_layers = 2
         self.attention_num_heads = None
 
-        self.label_dim = 512
-
-        self.focal_loss_gamma = 1
-
-        self.phrase_length_max = 5
-        self.phrase_length_dim = 10
-
-        self.phrase_mask_prob = 0.0
+        self.label_dim = 1024
 
         self.valid_step = 2000
 

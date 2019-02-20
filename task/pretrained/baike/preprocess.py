@@ -190,14 +190,15 @@ class Labeler:
 
 def listfile(path: str):
     if os.path.isdir(path):
-        return [os.path.join(path, name) for name in os.listdir(path)]
+        for name in os.listdir(path):
+            yield from listfile(os.path.join(path, name))
     else:
         dir, prefix = os.path.split(path)
         if len(dir) == 0:
             dir = './'
-        return [os.path.join(dir, name)
-                for name in os.listdir(dir) if name.startswith(prefix)]
-
+        for name in os.listdir(dir):
+            if name.startswith(prefix):
+                yield os.path.join(dir, name)
 
 
 if __name__ == '__main__':

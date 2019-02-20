@@ -12,6 +12,7 @@ from .train import Config, Trainer
 
 def save(path, vocab: List[str], weight: torch.Tensor):
     with open(path, 'w') as output:
+        output.write('%d %d\n' % (len(vocab), weight.size(1)))
         for id, str in enumerate(vocab):
             vector = weight[id].tolist()
             output.write(str + ' ' + ' '.join('%f' % i for i in vector) + '\n')

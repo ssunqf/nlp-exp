@@ -41,10 +41,10 @@ class LocalAttention(nn.Module):
         '''
         value_size = value.size()
         seq_len, dim = value_size[-2:]
-        query = query.contiguous().view(-1, seq_len, dim)
-        key = key.contiguous().view(-1, seq_len, dim)
-        value = value.contiguous().view(-1, seq_len, dim)
-        mask = mask.contiguous().view(-1, seq_len)
+        query = query.reshape(-1, seq_len, dim)
+        key = key.reshape(-1, seq_len, dim)
+        value = value.reshape(-1, seq_len, dim)
+        mask = mask.reshape(-1, seq_len)
 
         half = min(self.window_size//2, seq_len//2)
 
@@ -126,13 +126,13 @@ class MultiHeadedAttention(nn.Module):
 
     def _split_head(self, input):
         batch_size, seq_len, dim = input.size()
-        return input.view(batch_size, seq_len, self.num_head, self.head_dim).transpose(1, 2)
+        return input.reshape(batch_size, seq_len, self.num_head, self.head_dim).transpose(1, 2)
 
     def _concat_head(self, input):
         batch_size, head_size, seq_len, head_dim = input.size()
         assert head_size == self.num_head
         assert head_dim == self.head_dim
-        return input.transpose(1, 2).contiguous().view(batch_size, seq_len, self.num_head * self.head_dim)
+        return input.transpose(1, 2).reshape(batch_size, seq_len, self.num_head * self.head_dim)
 
 
 class TransformerLayer(nn.Module):
