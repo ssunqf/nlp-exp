@@ -84,41 +84,29 @@ class BaikeDataset(Dataset):
             root=root, fields=fields,
             train=train, validation=None, test=test, **kwargs)
 
-    @classmethod
-    def iters(cls, fields, batch_size=16, device=torch.device('cpu'),
-              root='.data', path=None, train=None,
-              batch_size_fn=None, vectors=None, **kwargs):
 
-        train, *left  = cls.splits(fields, root=root, path=path, train=train, **kwargs)
-
-        if len(left) == 0:
-            train, valid = train.split(split_ratio=(len(train)-10000)/len(train))
-        else:
-            valid = left[0]
-
-        return data.BucketIterator.splits(
-            [train, valid],
-            batch_sizes=[batch_size, batch_size*2],
-            batch_size_fn=batch_size_fn,
-            shuffle=True,
-            sort_within_batch=True,
-            device=device, **kwargs)
-
-
-def lazy_iter(fields, data_prefix: str, path=None, lazy=True, repeat=True, **kwargs):
+def lazy_iter(fields,
+              path: str, data_prefix: str, valid_file: str,
+              batch_size=16, batch_size_fn=None,
+              device=torch.device('cpu'),
+              repeat=True,
+              **kwargs):
     files = [file[len(path)+1:] for file in listfile(os.path.join(path, data_prefix))]
     random.shuffle(files)
-    if not lazy:
-        datasets = [BaikeDataset.iters(fields, train=file, path=path, **kwargs) for file in files]
-        while True:
-            for dataset in datasets:
-                yield dataset
-            if not repeat:
-                break
-    else:
-        while True:
-            for file in files:
-                print(os.path.join(path, file))
-                yield BaikeDataset.iters(fields, train=file, path=path, **kwargs)
-            if not repeat:
-                break
+
+    valid, *_ = BaikeDataset.splits(fields, path=path, train=valid_file)
+
+    while True:
+        for file in files:
+            print(os.path.join(path, file))
+
+            train, *_ = BaikeDataset.splits(fields, path=path, train=file)
+            yield data.BucketIterator.splits(
+                [train, valid],
+                batch_sizes=[batch_size, batch_size*2],
+                batch_size_fn=batch_size_fn,
+                shuffle=True,
+                sort_within_batch=True,
+                device=device, **kwargs)
+        if not repeat:
+            break

@@ -369,15 +369,14 @@ class Tagger(nn.Module):
         sens, lens = batch.text
         token_masks = make_masks(sens, lens)
 
-        with torch.no_grad():
-            emb = self._embedding(sens, lens)
-            emb = torch.cat(
+        emb = self._embedding(sens, lens)
+        emb = torch.cat(
                 [emb] +
                 [tag_embedding(*getattr(batch, tag_embedding.name)) for tag_embedding in self.tag_embeddings] +
                 [getattr(batch, ngram.name) for ngram in self.ngram_fields], dim=-1)
 
-            forward, backward = self.encoder(emb, lens)
-            hidden = torch.cat([forward, backward], dim=-1)
+        forward, backward = self.encoder(emb, lens)
+        hidden = torch.cat([forward[-1], backward[-1]], dim=-1)
 
         if self.attention:
             hidden = self.attention(hidden, hidden, hidden, token_masks, batch_first=False)
@@ -601,7 +600,7 @@ class FineTrainer:
 
         loss, num_sen = self.model.criterion(batch)
         rloss = loss.item()
-        loss.div(num_sen).backward()
+        (loss / num_sen).backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
@@ -858,7 +857,7 @@ class NERConfig:
 
         self.loss = 'nll'  # ['nll', 'focal_loss']
 
-        self.device = torch.device('cpu')  # torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         self.cached_dataset_prefix = os.path.join(self.data_dir, 'dataset')
         self.checkpoint_path = os.path.join(self.model_dir, 'checkpoint')
@@ -1055,7 +1054,7 @@ class ChunkConfig:
         self.encoder_num_layers = 2
         self.pretrained_encoder = 'embeddings/encoder.pk'
         self.encoder_residual = False
-        self.attention_num_heads = None
+        self.attention_num_heads = 8
 
         self.taggers = []  # [(radical, 32)]
 

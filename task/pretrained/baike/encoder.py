@@ -257,13 +257,20 @@ class StackLSTM(nn.Module):
 
 
 class ElmoEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int, mode='LSTM', dropout=0.3):
+    def __init__(self,
+                 input_dim: int,
+                 hidden_dim: int,
+                 num_layers: int,
+                 mode='LSTM',
+                 require_grad=True,
+                 dropout=0.3):
         super(ElmoEncoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
         self.mode = mode
+        self.require_grad = require_grad
         self.dropout = nn.Dropout(dropout)
 
         self.forwards = nn.ModuleList(
@@ -279,25 +286,21 @@ class ElmoEncoder(nn.Module):
                        1,
                        bidirectional=False) for i in range(num_layers))
 
-    def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         f_hiddens = []
         for i, forward in enumerate(self.forwards):
             hidden, _ = forward(input if i == 0 else f_hiddens[-1])
-            if i > 0:
-                hidden = hidden + f_hiddens[-1]
             f_hiddens.append(self.dropout(hidden))
 
         b_input = input.flip([0])
         b_hiddens = []
         for i, backward in enumerate(self.backwards):
             hidden, _ = backward(b_input if i == 0 else b_hiddens[-1])
-            if i > 0:
-                hidden = hidden + b_hiddens[-1]
             b_hiddens.append(self.dropout(hidden))
 
         b_hiddens = [h.flip([0]) for h in b_hiddens]
 
-        return f_hiddens[-1], b_hiddens[-1]
+        return f_hiddens, b_hiddens
 
     def encoder_word(self, input: torch.Tensor, lens: torch.Tensor, word_ids: List[List[Tuple[int, int]]]):
         forward_h, backward_h = self.forward(input, lens)
