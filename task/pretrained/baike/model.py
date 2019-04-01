@@ -79,6 +79,6 @@ class Model(nn.Module):
                 for label in slabels:
                     if label.end - label.begin > 1:
                         phrases[bid].add((label.begin, label.end))
-        phrases = [list(s) for s in phrases]
+        phrases = [sorted(s, key=lambda i: i[0]) for s in phrases]
         return phrases
 

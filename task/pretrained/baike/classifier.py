@@ -3,6 +3,7 @@
 from typing import Tuple, List, Set, Dict
 import math
 import random
+import itertools
 
 import torch
 from torch import nn
@@ -194,6 +195,11 @@ class LMClassifier(nn.Module):
         logit = self.context2token(self.context_ffn(middle)) * self.inv_temperature
         return logit.max(dim=-1)[1]
 
+def pairwise(iterable):
+    "s -> (s0,s1), (s1,s2), (s2, s3), ..."
+    a, b = itertools.tee(iterable)
+    next(b, None)
+    return zip(a, b)
 
 class PhraseClassifier(nn.Module):
     def __init__(self, hidden_dim, max_length=15, dropout=0.3):
@@ -224,7 +230,7 @@ class PhraseClassifier(nn.Module):
 
         samples, features, targets, weights = self._make_sample(forwards, backwards, lens, phrases)
         if len(samples) == 0:
-            return [[] for _ in range(len(phrases))]
+            return [[] for _ in range(len(phrases))], self.find_phrase(forwards, backwards, lens, 0.5)
 
         preds = self.ffn(features)
 
@@ -263,16 +269,13 @@ class PhraseClassifier(nn.Module):
         device = forwards.device
         positive_samples, negative_samples, boundary_samples, internal_samples = [], [], [], []
         for bid, sen_phrases in enumerate(phrases):
-            for pid in range(len(sen_phrases) - 1):
-                first, second = sen_phrases[pid], sen_phrases[pid+1]
-                if first[0] > second[0]:
-                    first, second = second, first
-                negative_samples.append((bid,
-                                         first[0],
-                                         random.randint(second[0] + 1, second[1] - 1)))
-                negative_samples.append((bid,
-                                         random.randint(first[0] + 1, first[1] - 1),
-                                         second[1]))
+            for (f_b, f_e), (s_b, s_e) in pairwise(sen_phrases):
+                for mid in range(f_b+1, f_e):
+                    negative_samples.append((bid, mid, s_e))
+
+                for mid in range(s_b+1, s_e-1):
+                    negative_samples.append((bid, f_b, mid))
+
             for begin, end in sen_phrases:
                 if end - begin > 1:
                     positive_samples.append((bid, begin, end))
@@ -282,6 +285,7 @@ class PhraseClassifier(nn.Module):
                             if (0 < n_begin < begin < n_end < end) or (begin < n_begin < end < n_end < lens[bid]):
                                 negative_samples.append((bid, n_begin, n_end))
 
+                        '''
                             # noise
                             if 0 < n_begin < begin:
                                 boundary_samples.append((bid, n_begin, end))
@@ -291,6 +295,7 @@ class PhraseClassifier(nn.Module):
                         if begin < mid < end:
                             internal_samples.append((bid, begin, mid))
                             internal_samples.append((bid, mid, end))
+                        '''
 
         samples = positive_samples + negative_samples #+ boundary_samples + internal_samples
         if len(samples) > 0:
@@ -302,15 +307,15 @@ class PhraseClassifier(nn.Module):
 
             positive_weights = torch.tensor([1] * len(positive_samples), dtype=torch.float, device=device)
             negative_weights = torch.tensor([1] * len(negative_samples), dtype=torch.float, device=device)
-            boundary_weights = torch.tensor([1] * len(boundary_samples), dtype=torch.float, device=device)
-            internal_weights = torch.tensor([1] * len(internal_samples), dtype=torch.float, device=device)
+            # boundary_weights = torch.tensor([1] * len(boundary_samples), dtype=torch.float, device=device)
+            # internal_weights = torch.tensor([1] * len(internal_samples), dtype=torch.float, device=device)
 
             negative_weights = negative_weights * (positive_weights.sum() / negative_weights.sum())
 
             positive_total = positive_weights.sum()
             weights = torch.cat((
                 positive_weights,
-                negative_weights * (positive_total / negative_weights.sum()),
+                negative_weights * (2 * positive_total / negative_weights.sum()),
                 # boundary_weights * (positive_total * 0.4 / boundary_weights.sum()),
                 # internal_weights * (positive_total * 0.6 / internal_weights.sum())
             ), dim=-1)
