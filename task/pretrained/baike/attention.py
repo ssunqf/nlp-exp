@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.6
 # -*- coding: utf-8 -*-
 import math
+from typing import Tuple
 import torch
 from torch import nn
 from .base import MIN_SCORE
@@ -12,7 +13,11 @@ class GlobalAttention(nn.Module):
         super(GlobalAttention, self).__init__()
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self,
+                query: torch.Tensor,
+                key: torch.Tensor,
+                value: torch.Tensor,
+                mask=None) -> Tuple[torch.Tensor, torch.Tensor]:
         "Compute 'Scaled Dot Product Attention'"
         head_dim = query.size(-1)
         attention_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(head_dim)
@@ -96,7 +101,12 @@ class MultiHeadedAttention(nn.Module):
         nn.init.xavier_normal_(self.key_linearity.weight)
         nn.init.xavier_normal_(self.value_linearity.weight)
 
-    def forward(self, query, key, value, mask=None, batch_first=False):
+    def forward(self,
+                query: torch.Tensor,
+                key: torch.Tensor,
+                value: torch.Tensor,
+                mask=None,
+                batch_first=False) -> Tuple[torch.Tensor, torch.Tensor]:
         if not batch_first:
             query = query.transpose(0, 1)
             key = key.transpose(0, 1)
@@ -121,16 +131,17 @@ class MultiHeadedAttention(nn.Module):
 
         if not batch_first:
             value = value.transpose(0, 1)
+            attention_weights.mean()
 
-        return value
+        return value, attention_weights
 
     def _split_head(self, input):
         batch_size, seq_len, dim = input.size()
         return input.reshape(batch_size, seq_len, self.num_head, self.head_dim).transpose(1, 2)
 
     def _concat_head(self, input):
-        batch_size, head_size, seq_len, head_dim = input.size()
-        assert head_size == self.num_head
+        batch_size, num_head, seq_len, head_dim = input.size()
+        assert num_head == self.num_head
         assert head_dim == self.head_dim
         return input.transpose(1, 2).reshape(batch_size, seq_len, self.num_head * self.head_dim)
 

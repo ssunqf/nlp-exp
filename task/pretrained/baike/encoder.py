@@ -258,15 +258,15 @@ class StackLSTM(nn.Module):
 
 class ElmoEncoder(nn.Module):
     def __init__(self,
-                 input_dim: int,
-                 hidden_dim: int,
+                 input_size: int,
+                 hidden_size: int,
                  num_layers: int,
                  mode='LSTM',
                  require_grad=True,
                  dropout=0.3):
         super(ElmoEncoder, self).__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
+        self.input_size = input_size
+        self.hidden_size = hidden_size
         self.num_layers = num_layers
 
         self.mode = mode
@@ -275,18 +275,20 @@ class ElmoEncoder(nn.Module):
 
         self.forwards = nn.ModuleList(
             nn.RNNBase(mode,
-                       input_dim if i == 0 else hidden_dim,
-                       hidden_dim,
+                       input_size if i == 0 else hidden_size,
+                       hidden_size,
                        1,
                        bidirectional=False) for i in range(num_layers))
         self.backwards = nn.ModuleList(
             nn.RNNBase(mode,
-                       input_dim if i == 0 else hidden_dim,
-                       hidden_dim,
+                       input_size if i == 0 else hidden_size,
+                       hidden_size,
                        1,
                        bidirectional=False) for i in range(num_layers))
 
-    def forward(self, input: torch.Tensor, lens: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    def forward(self,
+                input: torch.Tensor,
+                lens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         f_hiddens = []
         for i, forward in enumerate(self.forwards):
             hidden, _ = forward(input if i == 0 else f_hiddens[-1])
@@ -301,19 +303,3 @@ class ElmoEncoder(nn.Module):
         b_hiddens = [h.flip([0]) for h in b_hiddens]
 
         return f_hiddens, b_hiddens
-
-    def encoder_word(self, input: torch.Tensor, lens: torch.Tensor, word_ids: List[List[Tuple[int, int]]]):
-        forward_h, backward_h = self.forward(input, lens)
-
-        char_seq_len, batch_size, dim = forward_h.size()
-
-        word_lens = [len(s) for s in word_ids]
-        new_hidden = torch.tensor(max(word_lens), batch_size, dim * 2, dtype=torch.float, device=input.device)
-        for bid, words in enumerate(word_ids):
-            sen = []
-            for begin, end in words:
-                sen.append(torch.cat((forward_h[end - 1, bid], backward_h[begin, bid]), -1))
-
-            new_hidden[:word_lens[bid], bid] = torch.stack(sen, dim=0)
-
-        return new_hidden, word_lens

@@ -257,7 +257,7 @@ class ChunkDataset(data.Dataset):
         return len(ex.text)
 
     def __init__(self, path, fields: List, **kwargs):
-        examples = [data.Example.fromlist((chars, types), fields)
+        examples = [data.Example.fromlist((chars, poses, types), fields)
                     for chars, poses, types in self.read_line(path)]
         super(ChunkDataset, self).__init__(examples, fields, **kwargs)
 
@@ -278,7 +278,7 @@ class ChunkDataset(data.Dataset):
 
                 tokens = line.split()
                 words.append(tokens[5])
-                poses.append(tokens[4])
+                poses.append(tokens[4].split('-')[0])
                 tags.append(tokens[3] if tokens[4] != 'URL' else 'URL')
 
             if len(words) > 0:
@@ -336,161 +336,145 @@ class ChunkDataset(data.Dataset):
 
 
 class Tagger(nn.Module):
-    def __init__(self, words: vocab.Vocab, tags: TagVocab,
+    def __init__(self,
+                 words: vocab.Vocab,
+                 tags: Dict[str, TagVocab],
                  embedding: nn.Embedding,
-                 tag_embeddings: nn.Module,
-                 ngram_fields: List[NgramField],
-                 elmo_encoder: ElmoEncoder,
-                 encoder: nn.LSTM,
-                 attention: MultiHeadedAttention,
-                 crf: LinearCRF):
+                 encoder: nn.Module,
+                 crfs: nn.ModuleDict):
         super(Tagger, self).__init__()
         self.words = words
         self.tags = tags
 
         self.embedding = embedding
-        self.tag_embeddings = tag_embeddings
-        self.ngram_fields = ngram_fields
         self.dropout = nn.Dropout(0.5)
-        self.elmo_encoder = elmo_encoder
         self.encoder = encoder
-        self.attention = attention
-        self.crf = crf
-
-    def _embedding(self, tokens, lens):
-        embed = self.embedding(tokens)
-        if self.elmo_encoder is None:
-            return embed
-
-        forwards, backwards = self.elmo_encoder(embed, lens)
-        return torch.cat([forwards, backwards], dim=-1)
+        self.crfs = crfs
 
     def _encode(self, batch: data.Batch):
         sens, lens = batch.text
         token_masks = make_masks(sens, lens)
+        emb = self.embedding(sens)
 
-        emb = self._embedding(sens, lens)
-        emb = torch.cat(
-                [emb] +
-                [tag_embedding(*getattr(batch, tag_embedding.name)) for tag_embedding in self.tag_embeddings] +
-                [getattr(batch, ngram.name) for ngram in self.ngram_fields], dim=-1)
+        if isinstance(self.encoder, ElmoEncoder):
+            forwards, backwards = self.encoder(emb, lens)
+            hidden = torch.cat((forwards[-1], backwards[-1]), dim=-1)
+        else:
+            hidden, _ = self.encoder(emb)
 
-        forward, backward = self.encoder(emb, lens)
-        hidden = torch.cat([forward[-1], backward[-1]], dim=-1)
-
-        if self.attention:
-            hidden = self.attention(hidden, hidden, hidden, token_masks, batch_first=False)
         return hidden, token_masks
 
     def predict(self, batch: data.Batch):
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return self.crf(hiddens, lens)
+        return {name: crf(hiddens, lens) for name, crf in self.crfs.items()}
 
-    def predict_with_prob(self, batch: data.Batch):
+    def predict_with_prob(self, batch: data.Batch) -> Dict[str, list]:
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return self.crf.predict_with_prob(hiddens, lens)
+        return {name: crf.predict_with_prob(hiddens, lens) for name, crf in self.crfs.items()}
 
     def nbest(self, batch: data.Batch):
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return self.crf.nbest(hiddens, lens, 5)
+        return {name: crf.nbest(hiddens, lens, 5) for name, crf in self.crfs.items()}
 
-    def criterion(self, batch: data.Batch):
+    def criterion(self, batch: data.Batch) -> Dict[str, torch.Tensor]:
         sens, lens = batch.text
-        tag_masks, tags = batch.tags
         hidden, token_masks = self._encode(batch)
-        return self.crf.neg_log_likelihood(hidden, lens, tag_masks)
+        return {name: crf.neg_log_likelihood(hidden, lens, getattr(batch, name)[0]) for name, crf in self.crfs.items()}
 
     def print_transition(self):
-        print(tabulate([self.tags.itos] + self.crf.transition.tolist(),
-                       headers="firstrow", tablefmt='grid', floatfmt='3.3g'))
+        for name in self.tags.keys():
+            print(tabulate([self.tags[name].itos] + self.crfs[name].transition.tolist(),
+                           headers="firstrow", tablefmt='grid', floatfmt='3.3g'))
 
     def print(self, batch: data.Batch):
         text, text_len = batch.text
-        gold_masks, gold_tags = batch.tags
-        for i in range(len(text_len)):
-            length = text_len[i]
-            print(' '.join([self.words.itos[w] + '#' + t
-                            for w, t in zip(text[0:length, i].data.tolist(), gold_tags[i])]))
+        for name in self.crfs.keys():
+            gold_masks, gold_tags = batch[name]
+            for i in range(len(text_len)):
+                length = text_len[i]
+                print(name + ': ' + ' '.join([self.words.itos[w] + '#' + t
+                                for w, t in zip(text[0:length, i].data.tolist(), gold_tags[i])]))
 
     def sample_nbest(self, batch: data.Batch):
         self.eval()
         text, text_len = batch.text
         gold_masks, gold_tags = batch.tags
-        nbests = self.nbest(batch)
+        results = self.nbest(batch)
 
-        for i in range(len(nbests)):
-            length = text_len[i]
-            sen = [self.words.itos[w] for w in text[0:length, i].data.tolist()]
+        for name, nbests in results.items():
+            for i in range(len(nbests)):
+                length = text_len[i]
+                sen = [self.words.itos[w] for w in text[0:length, i].data.tolist()]
 
-            def tostr(words: List[str], tags: List[str]):
-                for word, tag in zip(words, tags):
-                    if tag == 'E_O' or tag == 'S_O':
-                        yield word + ' '
-                    elif tag == 'B_O':
-                        yield word + ' '
-                    elif tag.startswith('B_'):
-                        yield '[[%s' % (word)
-                    elif tag.startswith('E_'):
-                        yield '%s||%s]] ' % (word, tag[2:])
-                    elif tag.startswith('S_'):
-                        yield '[[%s||%s]] ' % (word, tag[2:])
-                    elif tag.startswith('M_'):
-                        yield word
-                    else:
-                        yield word + ' '
+                def tostr(words: List[str], tags: List[str]):
+                    for word, tag in zip(words, tags):
+                        if tag == 'E_O' or tag == 'S_O':
+                            yield word + ' '
+                        elif tag == 'B_O':
+                            yield word + ' '
+                        elif tag.startswith('B_'):
+                            yield '[[%s' % (word)
+                        elif tag.startswith('E_'):
+                            yield '%s||%s]] ' % (word, tag[2:])
+                        elif tag.startswith('S_'):
+                            yield '[[%s||%s]] ' % (word, tag[2:])
+                        elif tag.startswith('M_'):
+                            yield word
+                        else:
+                            yield word + ' '
 
-            gold_tag = ''.join(tostr(sen, gold_tags[i]))
-            # gold_tag = ''.join([tostr(w, id) for w, id in zip(sen, gold_tags[0:length, i].data)])
+                gold_tag = ''.join(tostr(sen, gold_tags[i]))
+                # gold_tag = ''.join([tostr(w, id) for w, id in zip(sen, gold_tags[0:length, i].data)])
 
-            # if pred_tag != gold_tag:
-            # print('\ngold: %s\npred: %s\nscore: %f' % (gold_tag, pred_tag, score))
-            print('\ngold: %s' % (gold_tag))
-            for pred_tag, score in nbests[i]:
-                pred_tag = ''.join(tostr(sen, [self.tags.itos[tag_id] for tag_id in pred_tag]))
-                print('pred: %s\nscore: %f' % (pred_tag, score))
+                # if pred_tag != gold_tag:
+                # print('\ngold: %s\npred: %s\nscore: %f' % (gold_tag, pred_tag, score))
+                print('\ngold: %s' % (gold_tag))
+                for pred_tag, score in nbests[i]:
+                    pred_tag = ''.join(tostr(sen, [self.tags[name].itos[tag_id] for tag_id in pred_tag]))
+                    print('pred: %s\nscore: %f' % (pred_tag, score))
 
     def sample(self, batch: data.Batch):
         self.eval()
         text, text_len = batch.text
-        gold_masks, gold_tags = batch.tags
-        pred_tags = self.predict_with_prob(batch)
+        pred_results = self.predict_with_prob(batch)
 
-        results = []
-        for i in range(len(pred_tags)):
-            pred_tag, score = pred_tags[i]
-            length = text_len[i]
-            sen = [self.words.itos[w] for w in text[0:length, i].data.tolist()]
+        for name, pred_tags in pred_results.items():
+            gold_masks, gold_tags = getattr(batch, name)
 
-            def tostr(words: List[str], tags: List[str]):
-                for word, tag in zip(words, tags):
-                    if tag == 'E_O' or tag == 'S_O':
-                        yield word + ' '
-                    elif tag == 'B_O':
-                        yield word
-                    elif tag.startswith('B_'):
-                        yield '[[%s' % (word)
-                    elif tag.startswith('E_'):
-                        yield '%s||%s]] ' % (word, tag[2:])
-                    elif tag.startswith('S_'):
-                        yield '[[%s||%s]] ' % (word, tag[2:])
-                    elif tag.startswith('M_'):
-                        yield word
-                    else:
-                        yield word + ' '
+            for i in range(len(pred_tags)):
+                pred_tag, score = pred_tags[i]
+                length = text_len[i]
+                sen = [self.words.itos[w] for w in text[0:length, i].data.tolist()]
 
-            pred_tag = [self.tags.itos[tag_id] for tag_id in pred_tag]
-            gold_tag = gold_tags[i][:text_len[i]]
-            if pred_tag != gold_tag:
-                pred_tag = ''.join(tostr(sen, pred_tag))
-                gold_tag = ''.join(tostr(sen, gold_tag))
-                print('\ngold: %s\npred: %s\nscore: %f' % (gold_tag, pred_tag, score))
+                def tostr(words: List[str], tags: List[str]):
+                    for word, tag in zip(words, tags):
+                        if tag == 'E_O' or tag == 'S_O':
+                            yield word + ' '
+                        elif tag == 'B_O':
+                            yield word
+                        elif tag.startswith('B_'):
+                            yield '[[%s' % (word)
+                        elif tag.startswith('E_'):
+                            yield '%s||%s]] ' % (word, tag[2:])
+                        elif tag.startswith('S_'):
+                            yield '[[%s||%s]] ' % (word, tag[2:])
+                        elif tag.startswith('M_'):
+                            yield word
+                        else:
+                            yield word + ' '
 
-        return results
+                pred_tag = [self.tags[name].itos[tag_id] for tag_id in pred_tag]
+                gold_tag = gold_tags[i][:text_len[i]]
+                if pred_tag != gold_tag:
+                    pred_tag = ''.join(tostr(sen, pred_tag))
+                    gold_tag = ''.join(tostr(sen, gold_tag))
+                    print('\n%s\ngold: %s\npred: %s\nscore: %f' % (name, gold_tag, pred_tag, score))
 
-    def evaluation_one(self, preds: List[str],
+    def evaluation_one(self,
+                       preds: List[str],
                        golds: List[str]) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
         assert len(preds) == len(golds)
         correct_counts = defaultdict(float)
@@ -522,41 +506,50 @@ class Tagger(nn.Module):
 
         return correct_counts, gold_counts, pred_counts
 
-    def evaluation(self, data_it) -> Dict[str, float]:
+    def evaluation(self, data_it) -> Dict[str, Dict[str, float]]:
         self.eval()
-        correct_counts, gold_counts, pred_counts = Counter(), Counter(), Counter()
+        counts = {name: {'correct': Counter(), 'gold': Counter(), 'pred': Counter()}
+                                                    for name in self.crfs.keys()}
         for batch in tqdm(data_it, desc='eval', total=len(data_it)):
             _, text_len = batch.text
-            masks, golds = batch.tags
-            preds = self.predict(batch)
+            results = self.predict(batch)
 
-            # print(gold_tags)
-            for i in range(len(text_len)):
-                pred, score = preds[i]
-                _correct_counts, _gold_counts, _pred_counts = self.evaluation_one(
-                    [self.tags.itos[p] for p in pred[1:-1]], golds[i][1:text_len[i] - 1])
+            for task_name, preds in results.items():
+                masks, golds = getattr(batch, task_name)
 
-                correct_counts.update(_correct_counts)
-                gold_counts.update(_gold_counts)
-                pred_counts.update(_pred_counts)
+                # print(gold_tags)
+                for i in range(len(text_len)):
+                    pred, score = preds[i]
+                    _correct_counts, _gold_counts, _pred_counts = self.evaluation_one(
+                        [self.tags[task_name].itos[p] for p in pred[1:-1]], golds[i][1:text_len[i] - 1])
 
-        total_correct = sum(correct_counts.values())
-        total_gold = sum(gold_counts.values())
-        total_pred = sum(pred_counts.values())
+                    counts[task_name]['correct'].update(_correct_counts)
+                    counts[task_name]['gold'].update(_gold_counts)
+                    counts[task_name]['pred'].update(_pred_counts)
 
-        results = {'total_f1': total_correct * 2 / (total_gold + total_pred + 1e-5),
-                   'total_prec': total_correct / (total_gold + 1e-5),
-                   'total_recall': total_correct / (total_pred + 1e-5)}
-        for name in gold_counts.keys():
-            results['%s_f1' % name] = correct_counts[name] * 2 / (pred_counts[name] + gold_counts[name] + 1e-5)
-            results['%s_prec' % name] = correct_counts[name] / (pred_counts[name] + 1e-5)
-            results['%s_recall' % name] = correct_counts[name] / (gold_counts[name] + 1e-5)
+        tasks = {}
+        for task_name, detail in counts.items():
+            correct_counts, gold_counts, pred_counts = detail['correct'], detail['gold'], detail['pred']
+            total_correct = sum(correct_counts.values())
+            total_gold = sum(gold_counts.values())
+            total_pred = sum(pred_counts.values())
 
-        return results
+            results = {'total_f1': total_correct * 2 / (total_gold + total_pred + 1e-5),
+                       'total_prec': total_correct / (total_gold + 1e-5),
+                       'total_recall': total_correct / (total_pred + 1e-5)}
+            for name in detail['gold'].keys():
+                results['%s_f1' % name] = correct_counts[name] * 2 / (pred_counts[name] + gold_counts[name] + 1e-5)
+                # results['%s_prec' % name] = correct_counts[name] / (pred_counts[name] + 1e-5)
+                # results['%s_recall' % name] = correct_counts[name] / (gold_counts[name] + 1e-5)
+
+            tasks[task_name] = results
+        return tasks
 
 
 class FineTrainer:
-    def __init__(self, config, model: Tagger,
+    def __init__(self,
+                 config,
+                 model: Tagger,
                  train_it, valid_it, test_it,
                  valid_step, checkpoint_dir):
         self.config = config
@@ -594,42 +587,40 @@ class FineTrainer:
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 
-    def train_one(self, batch) -> Tuple[float, int]:
+    def train_one(self, batch) -> Dict[str, float]:
         self.model.train()
         self.model.zero_grad()
 
-        loss, num_sen = self.model.criterion(batch)
-        rloss = loss.item()
-        (loss / num_sen).backward()
+        losses = self.model.criterion(batch)
+
+        (sum(losses.values()) / len(batch)).backward()
 
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
         self.optimizer.step()
 
-        return rloss, num_sen
+        return {name: loss.item() for name, loss in losses.items()}
 
-    def valid(self, valid_it) -> Tuple[torch.Tensor, float]:
+    def valid(self, valid_it) -> Dict[str, float]:
         self.model.eval()
         with torch.no_grad():
-            total_loss = 0
+            total_losses = Counter()
             num_samples = 0
 
             sample = False
             for _, valid_batch in tqdm(enumerate(valid_it), desc='valid', total=len(self.valid_it)):
-                loss, num_token = self.model.criterion(valid_batch)
+                losses = self.model.criterion(valid_batch)
 
-                total_loss += loss.item()
-                num_samples += num_token
+                total_losses.update({name: l.item() for name, l in losses.items()})
+                num_samples += len(valid_batch)
 
                 if not sample and random.random() < 0.02:
                     self.model.sample(valid_batch)
 
                 del valid_batch
 
-            # self.model.print_transition()
-
-            return total_loss / num_samples, num_samples
+            return {name: loss/num_samples for name, loss in total_losses.items()}
 
     @staticmethod
     def tabulate_format(scores: Dict) -> str:
@@ -638,36 +629,37 @@ class FineTrainer:
                          itertools.groupby(scores.items(), key=lambda item: item[0].rsplit('_', maxsplit=1)[0])])
 
     def train(self):
-        total_loss, total_sen, start = 0, 1e-10, time.time()
+        total_losses, total_sen, start = Counter(), 1e-10, time.time()
         checkpoint_losses = deque()
 
         for step, batch in tqdm(enumerate(self.train_it, start=1), total=len(self.train_it)):
 
-            loss, num_sen = self.train_one(batch)
+            losses = self.train_one(batch)
+
+            total_losses.update(losses)
+            total_sen += len(batch)
 
             del batch
-
-            total_loss += loss
-            total_sen += num_sen
 
             if step % self.valid_step == 0:
                 train_speed = total_sen / (time.time() - start)
 
                 inference_start = time.time()
-                valid_loss, valid_num_samples = self.valid(self.valid_it)
+                valid_losses = self.valid(self.valid_it)
 
-                self.checkpoint(checkpoint_losses, valid_loss)
+                self.checkpoint(checkpoint_losses, sum(valid_losses.values()))
 
-                for field in self.model.ngram_fields:
-                    field.tagger.print_stats()
+                for name, loss in total_losses.items():
+                    print("%s train loss=%.6f\t\tvalid loss=%.6f" % (name, loss / total_sen, valid_losses[name]))
+                    self.summary_writer.add_scalars(
+                        'loss',
+                        {'train_%s' % name: loss / total_sen, 'valid_%s' % name: valid_losses[name]},
+                        step)
 
-                print("train loss=%.6f\t\tvalid loss=%.6f" % (total_loss / total_sen, valid_loss))
                 print("speed:   train %.2f sentence/s  valid %.2f sentence/s\n\n" %
-                      (train_speed, valid_num_samples / (time.time() - inference_start)))
+                      (train_speed, len(self.valid_it.dataset) / (time.time() - inference_start)))
 
-                self.summary_writer.add_scalars('loss', {'train': total_loss / total_sen, 'valid': valid_loss}, step)
-
-                total_loss, total_sen, start = 0, 1e-10, time.time()
+                total_losses, total_sen, start = Counter(), 1e-10, time.time()
 
             if self.train_it.iterations % (self.valid_step * 5) == 0:
                 with torch.no_grad():
@@ -678,13 +670,19 @@ class FineTrainer:
                         {embedding.name: embedding.scale_ratio.item() for embedding in self.model.tag_embeddings},
                         step)
                     '''
-                    valid_res = self.model.evaluation(self.valid_it)
-                    print(self.tabulate_format(valid_res))
-                    self.summary_writer.add_scalars('eval_valid', valid_res, step)
+                    eval_start = time.time()
+                    results = self.model.evaluation(self.valid_it)
+                    print("speed: eval %.2f sentence/s" % (len(self.valid_it.dataset)/(time.time() - eval_start)))
+                    for name, result in results.items():
+                        print('------- %s -------' % name)
+                        print(self.tabulate_format(result))
+                        self.summary_writer.add_scalars('%s_eval_valid' % name, result, step)
 
-                    eval_res = self.model.evaluation(self.test_it)
-                    print(self.tabulate_format(eval_res))
-                    self.summary_writer.add_scalars('eval_test', eval_res, step)
+                    results = self.model.evaluation(self.test_it)
+                    for name, result in results.items():
+                        print('------- %s -------' % name)
+                        print(self.tabulate_format(result))
+                        self.summary_writer.add_scalars('%s_eval_test' % name, result, step)
 
     def checkpoint(self, checkpoint_losses, valid_loss):
         if len(checkpoint_losses) == 0 or checkpoint_losses[-1] > valid_loss:
@@ -706,41 +704,26 @@ class FineTrainer:
             model = Trainer.load_model(coarse_config, TEXT, label_fields)
             states = torch.load(checkpoint, map_location=fine_config.device)
             model.load_state_dict(states['model'])
-            embedding, elmo_encoder = model.embedding, model.encoder
-        elif fine_config.pretrained_embedding is not None:
-            TEXT = data.Field(include_lengths=True, init_token=INIT_TOKEN, eos_token=EOS_TOKEN, pad_token=PAD_TOKEN)
-            itos, embedding = CompressedEmbedding.from_pretrained(fine_config.pretrained_embedding, fine_config.embedding_dim, freeze=True)
-            text_vocab = vocab.Vocab(counter=Counter(itos), min_freq=1)
-            setattr(TEXT, 'vocab', text_vocab)
-
-            elmo_encoder = None
+            embedding, encoder = model.embedding, model.encoder
         else:
             TEXT = data.Field(include_lengths=True, init_token=INIT_TOKEN, eos_token=EOS_TOKEN, pad_token=PAD_TOKEN)
-            embedding, elmo_encoder = None, None
+            embedding, encoder = None, None
 
-        tag_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
-
-        char_fields = []
-        for tagger, dim in fine_config.taggers:
-            char_fields.append(TagField(tagger))
-
-        ngram_fields = [NgramField(tagger) for tagger in fine_config.ngram_taggers]
+        pos_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
+        chunk_field = PartialField(init_token=INIT_TOKEN, eos_token=EOS_TOKEN)
 
         train, valid, test = fine_config.dataset_class.splits(
             path=fine_config.data_dir,
             train=fine_config.train,
             validation=fine_config.valid,
             test=fine_config.test,
-            fields=[(('text', *[field.name for field in char_fields], *[field.name for field in ngram_fields]),
-                     (TEXT, *char_fields, *ngram_fields)), ('tags', tag_field)])
+            fields=[('text', TEXT), ('pos', pos_field), ('chunk', chunk_field)])
 
         if checkpoint is None and not hasattr(TEXT, 'vocab'):
             TEXT.build_vocab(train, min_freq=fine_config.text_min_freq)
 
-        tag_field.build_vocab(train, min_freq=fine_config.tag_min_freq)
-
-        for field in char_fields:
-            field.build_vocab(train, min_freq=fine_config.tag_min_freq)
+        pos_field.build_vocab(train, min_freq=fine_config.tag_min_freq)
+        chunk_field.build_vocab(train, min_freq=fine_config.tag_min_freq)
 
         train_it, valid_it, test_it = \
             BucketIterator.splits([train, valid, test],
@@ -751,62 +734,40 @@ class FineTrainer:
 
         train_it.repeat = True
 
-        tag_embeddings = nn.ModuleList(
-            [TagEmbedding(field.name, len(field.vocab), dim, padding_idx=field.vocab.stoi[PAD_TOKEN])
-             for field, (tagger, dim) in zip(char_fields, fine_config.taggers)])
-        total_tag_dim = sum(dim for tagger, dim in fine_config.taggers) + sum(
-            tagger.dim() for tagger in fine_config.ngram_taggers)
+        if embedding is None:
+            embedding = nn.Embedding(
+                len(TEXT.vocab),
+                fine_config.embedding_dim,
+                padding_idx=TEXT.vocab.stoi[PAD_TOKEN],
+                scale_grad_by_freq=True
+            )
 
-        print('voc', '\n'.join(
-            ['%s:%d %s' % (field.name, len(field.vocab), ' '.join(field.vocab.itos)) for field in char_fields]))
-        print('total_tag_dim = %d' % total_tag_dim)
-
-        if checkpoint is None:
-            if embedding is None:
-                embedding = nn.Embedding(
-                    len(TEXT.vocab),
-                    fine_config.embedding_dim,
-                    padding_idx=TEXT.vocab.stoi[PAD_TOKEN],
-                    scale_grad_by_freq=True
-                )
-            if fine_config.pretrained_encoder is None:
-                encoder = nn.LSTM(
-                    fine_config.embedding_dim + total_tag_dim,
-                    fine_config.encoder_hidden_dim // 2,
-                    fine_config.encoder_num_layers,
-                    bidirectional=True,
-                    # residual=fine_config.encoder_residual,
-                    dropout=0.5)
-            else:
-                encoder = torch.load(fine_config.pretrained_encoder, map_location=fine_config.device)
-        else:
+        if encoder is None:
             encoder = nn.LSTM(
-                coarse_config.encoder_hidden_dim * 2 + total_tag_dim,
+                fine_config.embedding_dim,
                 fine_config.encoder_hidden_dim // 2,
-                1,
+                fine_config.encoder_num_layers,
                 bidirectional=True,
                 # residual=fine_config.encoder_residual,
                 dropout=0.5)
 
-        if fine_config.attention_num_heads:
-            attention = MultiHeadedAttention(fine_config.attention_num_heads,
-                                             elmo_encoder.hidden_dim * 2,
-                                             dropout=0.3)
-        else:
-            attention = None
+        pos_crf = LinearCRF(encoder.hidden_size * 2,
+                            len(pos_field.vocab),
+                            pos_field.vocab.transition_constraints,
+                            attention_num_heads=fine_config.attention_num_heads,
+                            dropout=0.3)
+        chunk_crf = LinearCRF(encoder.hidden_size * 2,
+                              len(chunk_field.vocab),
+                              chunk_field.vocab.transition_constraints,
+                              attention_num_heads=fine_config.attention_num_heads,
+                              dropout=0.3)
 
-        crf = LinearCRF(elmo_encoder.hidden_dim * 2,
-                        len(tag_field.vocab),
-                        tag_field.vocab.transition_constraints,
-                        dropout=0.3)
-        fine_model = Tagger(TEXT.vocab, tag_field.vocab,
+        fine_model = Tagger(TEXT.vocab, {'pos': pos_field.vocab, 'chunk': chunk_field.vocab},
                             embedding,
-                            tag_embeddings,
-                            ngram_fields,
-                            None,
-                            elmo_encoder,
-                            attention,
-                            crf)
+                            encoder,
+                            nn.ModuleDict({
+                                'pos': pos_crf,
+                                'chunk': chunk_crf}))
 
         fine_model.to(fine_config.device)
 
@@ -853,7 +814,7 @@ class NERConfig:
         self.encoder_hidden_dim = 256
         self.encoder_num_layers = 2
         self.encoder_residual = False
-        self.attention_num_heads = None
+        self.attention_num_heads = 8
 
         self.loss = 'nll'  # ['nll', 'focal_loss']
 
@@ -867,7 +828,7 @@ class NERConfig:
         self.summary_dir = os.path.join(self.model_dir, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.valid_step = 200
+        self.valid_step = 400
 
 
 class CTBPOSConfig:
@@ -1048,11 +1009,9 @@ class ChunkConfig:
 
         # model
         self.vocab_size = 100
-        self.embedding_dim = 512
-        self.pretrained_embedding = 'embeddings/word.vec'
-        self.encoder_hidden_dim = 256
+        self.embedding_dim = 1024
+        self.encoder_hidden_dim = 1024
         self.encoder_num_layers = 2
-        self.pretrained_encoder = 'embeddings/encoder.pk'
         self.encoder_residual = False
         self.attention_num_heads = 8
 
@@ -1073,7 +1032,7 @@ class ChunkConfig:
         self.summary_dir = os.path.join(self.model_dir, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.valid_step = 200
+        self.valid_step = 400
 
 
 configs = {'ctb': CTBPOSConfig, 'ner': NERConfig, 'people': PeopleConfig, 'cnc': CNC_config, 'chunk': ChunkConfig}

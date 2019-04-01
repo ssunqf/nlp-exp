@@ -34,15 +34,15 @@ class Model(nn.Module):
     def forward(self, data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
         text, lens = data.text
 
-        forward_h, backward_h = self.encoder(self.embedding(text), lens)
+        forwards, backwards = self.encoder(self.embedding(text), lens)
 
         losses = {}
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            losses[classifier.name] = classifier(forward_h[-1], backward_h[-1], labels)['loss']
+            losses[classifier.name] = classifier(forwards[-1], backwards[-1], labels)['loss']
 
         if self.lm_classifier is not None:
-            losses[self.lm_classifier.name] = self.lm_classifier(forward_h[-1], backward_h[-1], text, lens)['loss']
+            losses[self.lm_classifier.name] = self.lm_classifier(forwards[-1], backwards[-1], text, lens)['loss']
 
         return losses, lens.size(0)
 
@@ -55,12 +55,12 @@ class Model(nn.Module):
     def predict(self, data: data.Batch) -> Tuple[Dict[str, List], List]:
         text, lens = data.text
 
-        forward_h, backward_h = self.encoder(self.embedding(text), lens)
+        forwards, backwards = self.encoder(self.embedding(text), lens)
 
         label_results = defaultdict(list)
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            label_results.update(classifier.predict(forward_h[-1], backward_h[-1], labels))
-        lm_result = self.lm_classifier.predict(forward_h[-1], backward_h[-1])
+            label_results.update(classifier.predict(forwards[-1], backwards[-1], labels))
+        lm_result = self.lm_classifier.predict(forwards[-1], backwards[-1])
         return label_results, lm_result
 

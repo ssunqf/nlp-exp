@@ -317,8 +317,9 @@ class Trainer:
     @classmethod
     def load_model(cls, config, text_field, label_fields):
 
-        embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
-                                    padding_idx=text_field.vocab.stoi[PAD_TOKEN])
+        embedding = nn.Embedding(len(text_field.vocab),
+                                 config.embedding_dim,
+                                 padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
         encoder = ElmoEncoder(config.embedding_dim,
                               config.encoder_hidden_dim,
