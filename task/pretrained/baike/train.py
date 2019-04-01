@@ -21,7 +21,7 @@ from tqdm import tqdm
 from task.pretrained.transformer.attention import TransformerLayer
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
 from .embedding import WindowEmbedding
-from .classifier import ContextClassifier, LMClassifier
+from .classifier import ContextClassifier, LMClassifier, PhraseClassifier
 from .data import Field, LabelField, lazy_iter
 from .encoder import StackLSTM, ElmoEncoder
 from .model import Model
@@ -40,6 +40,8 @@ class Trainer:
         self.task_optimizers = dict((task.name, optim.Adam(task.parameters(), 1e-3, weight_decay=1e-6))
                                      for task in self.model.label_classifiers)
         self.task_optimizers['lm'] = optim.Adam(self.model.lm_classifier.parameters(), 1e-3, weight_decay=1e-6)
+
+        self.task_optimizers['phrase'] = optim.Adam(self.model.phrase_classifier.parameters(), 1e-3, weight_decay=1e-6)
 
         self.dataset_it = dataset_it
 
@@ -126,7 +128,7 @@ class Trainer:
         with torch.no_grad():
             with tqdm(total=len(valid_it.dataset), desc='metrics') as valid_tqdm:
                 for _, valid_batch in enumerate(valid_it):
-                    label_results, lm_result = self.model.predict(valid_batch)
+                    label_results, lm_result, phrase_result = self.model.predict(valid_batch)
                     valid_tqdm.update(len(valid_batch))
 
                     for label_name, label_result in label_results.items():
@@ -145,7 +147,7 @@ class Trainer:
                                         recall[name] += len(inter) / len(gold)
 
                     if random.random() < 0.005:
-                        self.pretty_print(valid_batch, label_results, lm_result)
+                        self.pretty_print(valid_batch, label_results, lm_result, phrase_result)
 
                     del valid_batch
 
@@ -153,7 +155,7 @@ class Trainer:
             print(scores)
             return scores
 
-    def pretty_print(self, batch, label_results, lm_result):
+    def pretty_print(self, batch, label_results, lm_result, phrase_result):
         text, lens = batch.text
         for bid in range(lens.size(0)):
             text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
@@ -170,6 +172,12 @@ class Trainer:
                         print('(%d,%d,%s): (%s, %s, %s)' % (
                             label.begin, label.end,
                             ''.join(text_str[label.begin:label.end]), name, gold, pred))
+
+            for begin, end, gold, pred, weight in phrase_result[0][bid]:
+                print('(%d,%d,%s): (%.5f, %.5f, %.5f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred, weight))
+
+            for begin, end, prob in phrase_result[1][bid]:
+                print('(%d,%d,%s): %.5f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
     def pool_dataset(self, dataset_it, pool_size=10):
 
@@ -331,11 +339,14 @@ class Trainer:
 
         label_classifiers = nn.ModuleList([
             ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
+
+        phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
         model = Model(text_field.vocab,
                       embedding,
                       encoder,
                       lm_classifier,
-                      label_classifiers)
+                      label_classifiers,
+                      phrase_classifier)
 
         model.to(config.device)
 
@@ -382,14 +393,14 @@ class Config:
         self.entity_min_freq = 50
 
         self.embedding_dim = 128
-        self.encoder_mode = 'GRU'  # ['RNN', 'LSTM', 'GRU']
+        self.encoder_mode = 'LSTM'  # ['RNN', 'LSTM', 'GRU']
         self.encoder_hidden_dim = 128
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 
         self.label_dim = 128
 
-        self.valid_step = 20
+        self.valid_step = 50
 
         self.batch_size = 16
 
