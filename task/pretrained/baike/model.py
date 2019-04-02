@@ -66,9 +66,14 @@ class Model(nn.Module):
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
             label_results.update(classifier.predict(forwards[-1], backwards[-1], labels))
-        lm_result = self.lm_classifier.predict(forwards[0], backwards[0])
+        lm_result = self.lm_classifier.predict(forwards[-1], backwards[-1])
         phrase_result = self.phrase_classifier.predict(forwards[-1], backwards[-1], lens, self._collect_phrase(data))
         return label_results, lm_result, phrase_result
+
+    def find_phrase(self, data: data.Batch):
+        text, lens = data.text
+        forwards, backwards = self.encoder(self.embedding(text), lens)
+        return self.phrase_classifier.find_phrase(forwards[-1], backwards[-1], lens)
 
     def _collect_phrase(self, data: data.Batch):
         text, lens = data.text

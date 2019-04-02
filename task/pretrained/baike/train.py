@@ -147,7 +147,7 @@ class Trainer:
                                         recall[name] += len(inter) / len(gold)
 
                     if random.random() < 0.005:
-                        self.pretty_print(valid_batch, label_results, lm_result, phrase_result)
+                        self.pretty_print(valid_batch, label_results, lm_result, phrase_result, self.model.find_phrase(valid_batch))
 
                     del valid_batch
 
@@ -155,7 +155,7 @@ class Trainer:
             print(scores)
             return scores
 
-    def pretty_print(self, batch, label_results, lm_result, phrase_result):
+    def pretty_print(self, batch, label_results, lm_result, phrase_result, find_phrases):
         text, lens = batch.text
         for bid in range(lens.size(0)):
             text_str = [self.text_voc.itos[w] for w in text[:lens[bid], bid]]
@@ -173,10 +173,10 @@ class Trainer:
                             label.begin, label.end,
                             ''.join(text_str[label.begin:label.end]), name, gold, pred))
 
-            for begin, end, gold, pred, weight in phrase_result[0][bid]:
+            for begin, end, gold, pred, weight in phrase_result[bid]:
                 print('(%d,%d,%s): (%.5f, %.5f, %.5f)' % (begin, end, ''.join(text_str[begin:end]), gold, pred, weight))
 
-            for begin, end, prob in phrase_result[1][bid]:
+            for begin, end, prob in find_phrases[bid]:
                 print('(%d,%d,%s): %.5f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
     def pool_dataset(self, dataset_it, pool_size=10):
