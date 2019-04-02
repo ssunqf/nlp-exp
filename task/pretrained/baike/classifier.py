@@ -224,23 +224,24 @@ class PhraseClassifier(nn.Module):
 
         return {'loss': loss}
 
-    def predict(self, forwards: torch.Tensor, backwards: torch.Tensor,
-                lens: torch.Tensor, phrases: List[List[Tuple[int, int]]]) -> \
-            Tuple[List[List[Tuple[int, int, float, float, float]]], List[List[Tuple[int, int, float]]]]:
+    def predict(self,
+                forwards: torch.Tensor, backwards: torch.Tensor,
+                lens: torch.Tensor,
+                phrases: List[List[Tuple[int, int]]]) -> List[List[Tuple[int, int, float, float, float]]]:
 
         samples, features, targets, weights = self._make_sample(forwards, backwards, lens, phrases)
         if len(samples) == 0:
-            return [[] for _ in range(len(phrases))], self.find_phrase(forwards, backwards, lens, 0.5)
+            return [[] for _ in range(len(phrases))]
 
         preds = self.ffn(features)
 
         targets = targets.tolist()
         weights = weights.tolist()
-        preds = preds.squeeze().tolist()
+        preds = preds.squeeze(-1).tolist()
         results = [[] for _ in range(len(phrases))]
         for id, (bid, begin, end) in enumerate(samples):
             results[bid].append((begin, end, targets[id], preds[id], weights[id]))
-        return results, self.find_phrase(forwards, backwards, lens, 0.5)
+        return results
 
     def find_phrase(self, forwards: torch.Tensor, backwards: torch.Tensor, lens: torch.Tensor,
                     threshold=0.8) -> List[List[Tuple[int, int, float]]]:
