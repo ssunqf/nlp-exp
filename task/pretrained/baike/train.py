@@ -21,9 +21,9 @@ from tqdm import tqdm
 from task.pretrained.transformer.attention import TransformerLayer
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
 from .embedding import WindowEmbedding
-from .classifier import ContextClassifier, LMClassifier, PhraseClassifier
-from .data import Field, LabelField, lazy_iter
-from .encoder import StackLSTM, ElmoEncoder
+from .classifier import ContextClassifier, LMClassifier, PhraseClassifier, PPMI
+from .data import Field, LabelField, PhraseField, lazy_iter
+from .encoder import StackRNN, ElmoEncoder
 from .model import Model
 
 from .transformer import Embeddings, Transformer
@@ -36,12 +36,16 @@ class Trainer:
         self.config = config
         self.model = model
 
-        self.shared_optimizer = optim.Adam(list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()), 1e-3, weight_decay=1e-6)
-        self.task_optimizers = dict((task.name, optim.Adam(task.parameters(), 1e-3, weight_decay=1e-6))
-                                     for task in self.model.label_classifiers)
-        self.task_optimizers['lm'] = optim.Adam(self.model.lm_classifier.parameters(), 1e-3, weight_decay=1e-6)
-
-        self.task_optimizers['phrase'] = optim.Adam(self.model.phrase_classifier.parameters(), 1e-3, weight_decay=1e-6)
+        self.optimizer = optim.Adam(
+            [
+                # shared
+                {'params': list(self.model.embedding.parameters()) + list(self.model.encoder.parameters()) + list(self.model.lm_classifier.parameters())},
+                # phrase
+                {'params': self.model.phrase_classifier.parameters()},
+            ] + [{'params': task.parameters()} for task in self.model.label_classifiers],
+            lr=1e-3,
+            weight_decay=1e-6
+        )
 
         self.dataset_it = dataset_it
 
@@ -94,10 +98,7 @@ class Trainer:
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
 
-        self.shared_optimizer.step()
-        for name, loss in losses.items():
-            if loss.requires_grad:
-                self.task_optimizers[name].step()
+        self.optimizer.step()
 
         self.model.zero_grad()
         return losses
@@ -179,7 +180,7 @@ class Trainer:
             for begin, end, prob in find_phrases[bid]:
                 print('(%d,%d,%s): %.5f' % (begin, end, ''.join(text_str[begin:end]), prob))
 
-    def pool_dataset(self, dataset_it, pool_size=10):
+    def pool_dataset(self, dataset_it, pool_size=5):
 
         with tqdm(total=len(dataset_it.dataset), desc='train') as train_tqdm:
             pool = []
@@ -281,6 +282,7 @@ class Trainer:
         KEY_LABEL = LabelField('keys')
         ATTR_LABEL = LabelField('attrs')
         SUB_LABEL = LabelField('subtitles')
+        PHRASE_LABEL = PhraseField('phrase')
         # ENTITY_LABEL = LabelField('entity')
         TEXT.build_vocab(os.path.join(config.root, 'text.voc.gz'),
                          max_size=config.voc_max_size,
@@ -304,7 +306,7 @@ class Trainer:
         print('subtitle vocab size = %d' % len(SUB_LABEL.vocab))
         # print('entity vocab size = %d' % len(ENTITY_LABEL.vocab))
 
-        return TEXT, [KEY_LABEL, ATTR_LABEL, SUB_LABEL] #, ENTITY_LABEL]
+        return TEXT, [KEY_LABEL, ATTR_LABEL, SUB_LABEL], PHRASE_LABEL #, ENTITY_LABEL]
 
     @staticmethod
     def load_dataset(config, fields):
@@ -316,6 +318,7 @@ class Trainer:
 
         dataset_it = lazy_iter(fields,
                                path=config.root, data_prefix=config.train_prefix, valid_file=config.valid_file,
+                               distant_dict=config.distant_dict,
                                batch_size=config.batch_size,
                                batch_size_fn=batch_size_fn,
                                device=config.device)
@@ -323,24 +326,26 @@ class Trainer:
         return dataset_it
 
     @classmethod
-    def load_model(cls, config, text_field, label_fields):
+    def load_model(cls, config, text_field, label_fields, phrase_field):
 
         embedding = nn.Embedding(len(text_field.vocab), config.embedding_dim,
                                     padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
-        encoder = ElmoEncoder(config.embedding_dim,
-                              config.encoder_hidden_dim,
-                              config.encoder_num_layers,
-                              mode=config.encoder_mode,
-                              dropout=0.5)
+        encoder = StackRNN(config.encoder_mode,
+                           config.embedding_dim,
+                           config.encoder_hidden_dim,
+                           config.encoder_num_layers,
+                           dropout=0.5,
+                           bidirectional=True)
 
         lm_classifier = LMClassifier(len(text_field.vocab), config.embedding_dim, config.encoder_hidden_dim,
+                                     shared_weight=embedding.weight,
                                      padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
         label_classifiers = nn.ModuleList([
             ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
 
-        phrase_classifier = PhraseClassifier(config.encoder_hidden_dim)
+        phrase_classifier = PPMI(phrase_field.name, config.encoder_hidden_dim)
         model = Model(text_field.vocab,
                       embedding,
                       encoder,
@@ -354,9 +359,9 @@ class Trainer:
 
     @classmethod
     def create(cls, config, checkpoint=None):
-        TEXT, label_fields = cls.load_voc(config)
+        TEXT, label_fields, PHRASE_FIELD = cls.load_voc(config)
 
-        fields = [('text', TEXT), (tuple(field.name for field in label_fields), tuple(label_fields))]
+        fields = [('text', TEXT), (tuple(field.name for field in (label_fields + [PHRASE_FIELD])), tuple(label_fields + [PHRASE_FIELD]))]
 
         # train_it, valid_it = BaikeDataset.iters(
         #    fields, path=config.root, train=config.train_file, device=config.device)
@@ -364,7 +369,7 @@ class Trainer:
 
         dataset_it = cls.load_dataset(config, fields)
 
-        model = cls.load_model(config, TEXT, label_fields)
+        model = cls.load_model(config, TEXT, label_fields, PHRASE_FIELD)
 
         trainer = cls(config, model, dataset_it,
             TEXT.vocab,
@@ -380,6 +385,7 @@ class Config:
         self.root = './baike/preprocess-char'
         self.train_prefix = 'sentence.url'
         self.valid_file = 'valid.gz'
+        self.distant_dict = 'distant.dic'
 
         self.voc_max_size = 50000
         self.voc_min_freq = 50
@@ -392,15 +398,15 @@ class Config:
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 128
+        self.embedding_dim = 64
         self.encoder_mode = 'LSTM'  # ['RNN', 'LSTM', 'GRU']
-        self.encoder_hidden_dim = 128
+        self.encoder_hidden_dim = 64
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 
-        self.label_dim = 128
+        self.label_dim = 64
 
-        self.valid_step = 50
+        self.valid_step = 100
 
         self.batch_size = 16
 

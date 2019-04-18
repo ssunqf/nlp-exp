@@ -11,14 +11,14 @@ from torchtext.vocab import Vocab
 
 from .base import MASK_TOKEN
 from .classifier import LMClassifier, PhraseClassifier
-from .encoder import ElmoEncoder
+from .encoder import StackRNN, ElmoEncoder
 
 
 class Model(nn.Module):
     def __init__(self,
                  text_voc: Vocab,
                  embedding: nn.Embedding,
-                 encoder: ElmoEncoder,
+                 encoder: StackRNN,
                  lm_classifier: LMClassifier,
                  label_classifiers: nn.ModuleList,
                  phrase_classifier: PhraseClassifier):
@@ -36,18 +36,21 @@ class Model(nn.Module):
     def forward(self, data: data.Batch) -> Tuple[Dict[str, torch.Tensor], int]:
         text, lens = data.text
 
-        forwards, backwards = self.encoder(self.embedding(text), lens)
+        hiddens, _ = self.encoder(self.embedding(text), lens)
 
         losses = {}
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            losses[classifier.name] = classifier(forwards[-1], backwards[-1], labels)['loss']
+            losses[classifier.name] = classifier(hiddens[-1], labels)['loss']
 
         if self.lm_classifier is not None:
-            losses[self.lm_classifier.name] = self.lm_classifier(forwards[-1], backwards[-1], text, lens)['loss']
+            losses[self.lm_classifier.name] = self.lm_classifier(hiddens[0], text, lens)['loss']
 
         if self.phrase_classifier is not None:
-            losses[self.phrase_classifier.name] = self.phrase_classifier(forwards[-1], backwards[-1], lens, self._collect_phrase(data))['loss']
+            results = self.phrase_classifier(
+                hiddens[-1], lens,
+                getattr(data, self.phrase_classifier.name))
+            losses[self.phrase_classifier.name] = results['loss']
 
         return losses, lens.size(0)
 
@@ -60,30 +63,21 @@ class Model(nn.Module):
     def predict(self, data: data.Batch) -> Tuple[Dict[str, List], torch.Tensor, list]:
         text, lens = data.text
 
-        forwards, backwards = self.encoder(self.embedding(text), lens)
+        hiddens, _ = self.encoder(self.embedding(text), lens)
 
         label_results = defaultdict(list)
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
-            label_results.update(classifier.predict(forwards[-1], backwards[-1], labels))
-        lm_result = self.lm_classifier.predict(forwards[-1], backwards[-1])
-        phrase_result = self.phrase_classifier.predict(forwards[-1], backwards[-1], lens, self._collect_phrase(data))
+            label_results.update(classifier.predict(hiddens[-1], labels))
+        lm_result = self.lm_classifier.predict(hiddens[0])
+        phrase_result = self.phrase_classifier.predict(
+            hiddens[-1], lens,
+            getattr(data, self.phrase_classifier.name))
+
         return label_results, lm_result, phrase_result
 
     def find_phrase(self, data: data.Batch):
         text, lens = data.text
-        forwards, backwards = self.encoder(self.embedding(text), lens)
-        return self.phrase_classifier.find_phrase(forwards[-1], backwards[-1], lens)
-
-    def _collect_phrase(self, data: data.Batch):
-        text, lens = data.text
-        phrases = [set() for _ in range(lens.size(0))]
-        for classifier in self.label_classifiers:
-            labels = getattr(data, classifier.name)
-            for bid, slabels in enumerate(labels):
-                for label in slabels:
-                    if label.end - label.begin > 1:
-                        phrases[bid].add((label.begin, label.end))
-        phrases = [sorted(s, key=lambda i: i[0]) for s in phrases]
-        return phrases
+        hiddens, _ = self.encoder(self.embedding(text), lens)
+        return self.phrase_classifier.find_phrase(hiddens[-1], lens)
 

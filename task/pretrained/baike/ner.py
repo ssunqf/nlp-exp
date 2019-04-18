@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import functools
 import itertools
 import math
 import os
@@ -10,10 +11,12 @@ import random
 import time
 from collections import defaultdict, deque
 from typing import Dict
+from pyhanlp import HanLP
 
 from tabulate import tabulate
 from tensorboardX import SummaryWriter
 from torch import optim
+from torch.nn import functional as F
 from torchtext import vocab
 from torchtext.data.iterator import BucketIterator
 from tqdm import tqdm
@@ -21,7 +24,7 @@ from tqdm import tqdm
 from .attention import MultiHeadedAttention
 from .base import INIT_TOKEN, EOS_TOKEN, PAD_TOKEN, make_masks, bio_to_bmeso, listfile, strQ2B
 from .crf import LinearCRF, MaskedCRF
-from .encoder import ElmoEncoder, LSTM
+from .encoder import ElmoEncoder, StackRNN
 from .tags import *
 from .train import Trainer, Config
 from ..transformer.field import PartialField
@@ -335,6 +338,8 @@ class ChunkDataset(data.Dataset):
             chars.extend(chunk_chars)
             char_tags.extend(to_bmes(len(chunk_chars), type))
 
+        terms = [(term.word, str(term.nature)) for term in HanLP.segment(''.join(chars))]
+
         return chars, char_poses, char_tags
 
 import matplotlib.pyplot as plt
@@ -359,13 +364,99 @@ def showAttention(input_sentence: List[str], output_words: List[str], attentions
     plt.show()
 
 
+class PositionClassifier(nn.Module):
+    def __init__(self, hidden_dim, num_label):
+        super(PositionClassifier, self).__init__()
+
+        self.hidden_dim = hidden_dim
+        self.num_label = num_label
+
+        self.context2position = nn.Linear(self.hidden_dim//2, num_label)
+
+        self.forward2postion = nn.Sequential(
+            nn.Linear(self.hidden_dim//2, self.hidden_dim//2),
+            nn.Sigmoid(),
+        )
+
+        self.backward2postion = nn.Sequential(
+            nn.Linear(self.hidden_dim//2, self.hidden_dim//2),
+            nn.Sigmoid(),
+        )
+
+        self.pos_counter = Counter()
+        self.inverse_temperature = nn.Parameter(torch.tensor([1.0], dtype=torch.float))
+
+    def forward(self, hiddens, lens):
+        forwards, backwards = [], []
+        forward_positions, backward_positions = [], []
+        for i, len in enumerate(lens.tolist()):
+            maxlen = min(len, self.num_label)
+            forwards.append(hiddens[:maxlen, i, :self.hidden_dim//2])
+            forward_positions.extend(range(maxlen))
+            backwards.append(hiddens[:maxlen, i, self.hidden_dim//2:])
+            backward_positions.extend(range(maxlen - 1, -1, -1))
+
+        forwards = torch.cat(forwards, dim=0)
+        forward_positions = torch.tensor(forward_positions, dtype=torch.long, device=hiddens.device)
+
+        backwards = torch.cat(backwards, dim=0)
+        backward_positions = torch.tensor(backward_positions, dtype=torch.long, device=hiddens.device)
+
+        f_logit = self.context2position(self.forward2postion(forwards)) * self.inverse_temperature
+        f_loss = F.cross_entropy(f_logit.view(-1, self.num_label), forward_positions.view(-1))
+
+        b_logit = self.context2position(self.backward2postion(backwards)) * self.inverse_temperature
+        b_loss = F.cross_entropy(b_logit.view(-1, self.num_label), backward_positions.view(-1))
+
+        return (f_loss + b_loss) / 2
+
+
+class LMClassifier(nn.Module):
+    def __init__(self, voc_size, hidden_size, shared_weight=None):
+        super(LMClassifier, self).__init__()
+
+        self.voc_size = voc_size
+        self.hidden_size = hidden_size
+
+        self.context2token = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size//2),
+            nn.Sigmoid()
+        )
+        self.token_linear = nn.Linear(hidden_size // 2, self.voc_size)
+        if shared_weight is not None:
+            assert shared_weight.size() == self.token_linear.weight.size()
+            self.token_linear.weight = shared_weight
+
+        self.inverse_temperature = nn.Parameter(torch.tensor([1.0], dtype=torch.float))
+
+    def forward(self, token, hidden, lens):
+
+        contexts, tokens = [], []
+
+        for i, l in enumerate(lens):
+            context = torch.cat((hidden[:l-2, i, :self.hidden_size//2],
+                                 hidden[2:l, i, self.hidden_size//2:]),
+                                dim=-1)
+            contexts.append(context)
+            tokens.append(token[1:l-1, i])
+
+        contexts = torch.cat(contexts, dim=0)
+        tokens = torch.cat(tokens, dim=0)
+
+        return F.cross_entropy(self.token_linear(self.context2token(contexts)) * self.inverse_temperature,
+                               tokens)
+
+
 class Tagger(nn.Module):
     def __init__(self,
                  words: vocab.Vocab,
                  tags: Dict[str, TagVocab],
                  embedding: nn.Embedding,
                  encoder: nn.Module,
-                 crfs: nn.ModuleDict):
+                 crfs: nn.ModuleDict,
+                 task2layer: Dict[str, int],
+                 pos_cls: PositionClassifier,
+                 lm_cls: LMClassifier):
         super(Tagger, self).__init__()
         self.words = words
         self.tags = tags
@@ -374,6 +465,12 @@ class Tagger(nn.Module):
         self.dropout = nn.Dropout(0.5)
         self.encoder = encoder
         self.crfs = crfs
+        self.task2layer = task2layer
+
+        assert self.crfs.keys() == self.task2layer.keys()
+
+        self.pos_cls = pos_cls
+        self.lm_cls = lm_cls
 
     def _encode(self, batch: data.Batch):
         sens, lens = batch.text
@@ -382,31 +479,35 @@ class Tagger(nn.Module):
 
         if isinstance(self.encoder, ElmoEncoder):
             forwards, backwards = self.encoder(emb, lens)
-            hidden = torch.cat((forwards[-1], backwards[-1]), dim=-1)
+            hiddens = [torch.cat((f, b), dim=-1) for f, b in zip(forwards, backwards)]
         else:
-            hidden, _ = self.encoder(emb)
+            hiddens, _ = self.encoder(emb)
 
-        return hidden, token_masks
+        return hiddens, token_masks
 
     def predict(self, batch: data.Batch):
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return {name: crf(hiddens, lens) for name, crf in self.crfs.items()}
+        return {name: crf(hiddens[self.task2layer[name]], lens) for name, crf in self.crfs.items()}
 
     def predict_with_prob(self, batch: data.Batch) -> Dict[str, list]:
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return {name: crf.predict_with_prob(hiddens, lens) for name, crf in self.crfs.items()}
+        return {name: crf.predict_with_prob(hiddens[self.task2layer[name]], lens) for name, crf in self.crfs.items()}
 
     def nbest(self, batch: data.Batch):
         sens, lens = batch.text
         hiddens, token_masks = self._encode(batch)
-        return {name: crf.nbest(hiddens, lens, 5) for name, crf in self.crfs.items()}
+        return {name: crf.nbest(hiddens[self.task2layer[name]], lens, 5) for name, crf in self.crfs.items()}
 
     def criterion(self, batch: data.Batch) -> Dict[str, torch.Tensor]:
         sens, lens = batch.text
-        hidden, token_masks = self._encode(batch)
-        return {name: crf.neg_log_likelihood(hidden, lens, getattr(batch, name)[0]) for name, crf in self.crfs.items()}
+        hiddens, token_masks = self._encode(batch)
+        return {
+            **{name: crf.neg_log_likelihood(hiddens[self.task2layer[name]], lens, getattr(batch, name)[0]) for name, crf in self.crfs.items()},
+            'position': self.pos_cls(hiddens[0], lens),
+            'lm': self.lm_cls(sens, hiddens[0], lens)
+        }
 
     def print_transition(self):
         for name in self.tags.keys():
@@ -767,7 +868,8 @@ class FineTrainer:
             )
 
         if encoder is None:
-            encoder = nn.LSTM(
+            encoder = StackRNN(
+                'LSTM',
                 fine_config.embedding_dim,
                 fine_config.encoder_hidden_dim // 2,
                 fine_config.encoder_num_layers,
@@ -786,12 +888,16 @@ class FineTrainer:
                               attention_num_heads=fine_config.attention_num_heads,
                               dropout=0.3)
 
+        pos_cls = PositionClassifier(pos_crf.hidden_size, 100)
+        lm_cls = LMClassifier(len(TEXT.vocab), pos_crf.hidden_size, embedding.weight)
+
         fine_model = Tagger(TEXT.vocab, {'pos': pos_field.vocab, 'chunk': chunk_field.vocab},
                             embedding,
                             encoder,
-                            nn.ModuleDict({
-                                'pos': pos_crf,
-                                'chunk': chunk_crf}))
+                            nn.ModuleDict({'pos': pos_crf, 'chunk': chunk_crf}),
+                            {'pos': 0, 'chunk': -1},
+                            pos_cls,
+                            lm_cls)
 
         fine_model.to(fine_config.device)
 
@@ -1010,8 +1116,8 @@ class PeopleConfig:
 
 class ChunkConfig:
     def __init__(self, model_dir: str = None):
-        self.data_dir = 'chunk'
-        self.model_dir = model_dir if model_dir else './chunk/model'
+        self.data_dir = 'data/chunk'
+        self.model_dir = model_dir if model_dir else 'data/chunk/model'
         os.makedirs(self.model_dir, exist_ok=True)
 
         self.train = 'data/train.txt'
@@ -1056,7 +1162,7 @@ class ChunkConfig:
         self.summary_dir = os.path.join(self.model_dir, 'summary')
         os.makedirs(self.summary_dir, exist_ok=True)
 
-        self.valid_step = 400
+        self.valid_step = 200
 
 
 configs = {'ctb': CTBPOSConfig, 'ner': NERConfig, 'people': PeopleConfig, 'cnc': CNC_config, 'chunk': ChunkConfig}

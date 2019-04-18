@@ -10,6 +10,43 @@ from .base import get_dropout_mask, block_init
 from torch.jit import ScriptModule, script_method, trace
 
 
+class StackRNN(nn.Module):
+    def __init__(self, mode, input_size, hidden_size,
+                 num_layers=1, bias=True, batch_first=False,
+                 dropout=0, bidirectional=False):
+        super(StackRNN, self).__init__()
+
+        assert mode in {'LSTM', 'GRU', 'RNN_TANH', 'RNN_RELU'}
+
+        self.mode = mode
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+        self.dropout = dropout
+        self.bidirectional = bidirectional
+
+        num_directions = 2 if bidirectional else 1
+
+        self.layers = nn.ModuleList(
+            nn.RNNBase(mode,
+                       input_size if i == 0 else hidden_size * num_directions,
+                       hidden_size, num_layers=1,
+                       bias=bias, batch_first=batch_first,
+                       bidirectional=bidirectional) for i in range(num_layers)
+        )
+
+    def forward(self, input, hx=None):
+        outputs = [input]
+        h_ns = []
+        for layer in self.layers:
+            output, hn = layer(outputs[-1])
+            outputs.append(output)
+            h_ns.append(hn)
+        return outputs[1:], h_ns
+
+
 class LSTMLayer(nn.Module):
     def __init__(self, input_dim, hidden_dim, go_forward, dropout=0.3):
         super(LSTMLayer, self).__init__()
@@ -288,7 +325,7 @@ class ElmoEncoder(nn.Module):
 
     def forward(self,
                 input: torch.Tensor,
-                lens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+                lens: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         f_hiddens = []
         for i, forward in enumerate(self.forwards):
             hidden, _ = forward(input if i == 0 else f_hiddens[-1])

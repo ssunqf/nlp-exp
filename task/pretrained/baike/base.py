@@ -27,6 +27,9 @@ class Label:
         self.end = end
         self.tags = tags
 
+    def __len__(self):
+        return self.end - self.begin
+
 
 class PhraseLabel:
     __slots__ = 'begin', 'end', 'labels'
@@ -34,7 +37,10 @@ class PhraseLabel:
     def __init__(self, begin: int, end: int, **kwargs):
         self.begin = begin
         self.end = end
-        self.labels = {k: np.array(v, dtype=np.str) for k, v in kwargs.items()}
+        self.labels = {k: np.array(v, dtype=np.str) if isinstance(v, list) else v for k, v in kwargs.items()}
+
+    def __len__(self):
+        return self.end - self.begin
 
     def to_json(self):
         data = {'begin': self.begin, 'end': self.end}
