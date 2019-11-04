@@ -377,7 +377,7 @@ class ArcStandard(nn.Module):
         self.transition_lstm = BoundaryLSTM(self.transition_emb_dim, self.transition_lstm_dim, 1, self.dropout)
         #self.transition_lstm = BoundaryLSTM(len(self.transition_dict), self.transition_dim, self.dropout)
 
-        #self.encoder = QRNN(input_dim, feature_dim, 1,
+        #self.encode = QRNN(input_dim, feature_dim, 1,
         #                    window_sizes=3, dropout=dropout)
         self.transition_classifier = TransitionClassifier(self.buffer_dim + self.stack_dim * 2 + self.transition_lstm_dim,
                                                           len(self.transition_dict), self.dropout)
@@ -516,7 +516,7 @@ class ArcStandard(nn.Module):
         :return:
         '''
 
-        #sentences, _ = self.encoder(sentences)
+        #sentences, _ = self.encode(sentences)
 
         buffers, buffer_hiddens, lengths = self._buffer(sentences)
 
@@ -659,7 +659,7 @@ class ArcStandard(nn.Module):
 
     def parse(self, sentences, beam_size=10, append_scale_ratio=1.0):
 
-        #sentences, _ = self.encoder(sentences)
+        #sentences, _ = self.encode(sentences)
 
         buffers, buffer_hiddens, lengths = self._buffer(sentences)
 

@@ -5,6 +5,7 @@ import itertools
 import json
 import random
 import re
+import os
 from collections import Counter
 from collections import OrderedDict
 from typing import List
@@ -15,7 +16,6 @@ from nltk.corpus import LazyCorpusLoader, BracketParseCorpusReader
 
 import numpy as np
 import torch
-from pyhanlp import *
 from torchtext import data
 from torchtext.data import Dataset
 from tqdm import tqdm
@@ -145,7 +145,7 @@ class BaikeDataset(Dataset):
             # words = words.split(' ')
             chars = list(text)
             try:
-                labels = [PhraseLabel.from_json(label) for label in labels if len(label) > 0]
+                labels = [PhraseLabel.from_json(label) for label in labels if len(label) > 0 and label.end - label.begin > 1]
                 for label in labels:
                     label.labels['baike'] = True
 
@@ -157,7 +157,8 @@ class BaikeDataset(Dataset):
                     examples.append(data.Example.fromlist([chars, labels], fields))
 
             except Exception as e:
-                print(e.with_traceback())
+                print(line)
+                print(e)
                 pass
 
             #if len(examples) > 500000:

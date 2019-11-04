@@ -10,7 +10,12 @@ from tqdm import tqdm
 from typing import List, Tuple
 
 from .base import PhraseLabel
-from .tokenizer import hanlp_tokenizer as segmentor
+
+from recognizers_text import Culture, ModelResult
+from recognizers_number import NumberRecognizer
+from recognizers_number_with_unit import NumberWithUnitRecognizer
+from recognizers_date_time import DateTimeRecognizer
+from recognizers_sequence import SequenceRecognizer
 
 from .flashtext import KeywordProcessor
 
@@ -178,15 +183,54 @@ class Tree:
                         node.children.append(new_node)
 '''
 
+class RuleExtractor:
+    def __init__(self):
+        number_recognizer = NumberRecognizer(Culture.Chinese)
+        self.number_model = number_recognizer.get_number_model()
+        self.ordinal_model = number_recognizer.get_ordinal_model()
+        self.percentage_model = number_recognizer.get_percentage_model()
+
+        number_with_unit = NumberWithUnitRecognizer(Culture.Chinese)
+        self.age_model = number_with_unit.get_age_model()
+        self.currency_model = number_with_unit.get_currency_model()
+        self.dimension_model = number_with_unit.get_dimension_model()
+        self.temperature_model = number_with_unit.get_temperature_model()
+
+        date_time = DateTimeRecognizer(Culture.Chinese)
+        self.datetime_model = date_time.get_datetime_model()
+
+        sequence = SequenceRecognizer(Culture.Chinese)
+        self.phone_number_model = sequence.get_phone_number_model()
+        self.email_model = sequence.get_email_model()
+        self.guid_model = sequence.get_guid_model()
+        self.hashtag_model = sequence.get_hashtag_model()
+        self.ip_address_model = sequence.get_ip_address_model()
+        self.mention_model = sequence.get_mention_model()
+        self.url_model = sequence.get_url_model()
+
+    def extract(self, text: str, phrases: List[PhraseLabel]):
+
+        rule_phrases = [PhraseLabel(res.start, res.end + 1, **{res.type_name: True, 'rule': True})
+            for model in [self.ordinal_model, self.percentage_model,
+                          self.age_model, self.currency_model, self.dimension_model, self.temperature_model,
+                          self.datetime_model,
+                          self.phone_number_model, self.email_model, self.guid_model, self.hashtag_model,
+                          self.ip_address_model, self.url_model]
+             for res in model.parse(text) if res.end - res.start >= 2
+        ]
+
+        return rule_phrases
+
 
 class Extractor:
-    max_length = 15
+    max_length = 20
+    close_pattern = re.compile('(（[^）]+）|【[^】]+】|《[^》]+》)')
 
     def __init__(self, keyword_extractor: KeywordProcessor):
         self.distant_extractor = keyword_extractor
-        self.rule_extractor = RulePhraseExtractor()
 
     def extract(self, text: str, baike_labels: List[PhraseLabel]):
+        # baike_labels.extend(self.rule_extractor.extract(text, baike_labels))
         baike_labels = self._make_negatives(text, baike_labels, 'baike')
         labeled_offsets = set((label.begin, label.end) for label in baike_labels)
 
@@ -251,13 +295,14 @@ class Extractor:
         negatives.extend(self._pairwise(labels, tag))
         negatives.extend(self._intersect(labels, len(text), tag))
 
-        alnum = r'^([a-z][a-z]|\d\d)$'
+        alnum = r'^([A-Za-z][A-Za-z]|\d\d)$'
         negatives.extend([p for p in self._internal(labels, len(text), tag)
-                     if text[p.begin:p.end] not in self.distant_extractor
-                     or (p.begin > 0 and re.match(alnum, text[p.begin-1:p.begin+1], re.IGNORECASE))
-                     or (p.end < len(text) and re.match(alnum, text[p.end-1:p.end+1], re.IGNORECASE))])
+                     # if text[p.begin:p.end] not in self.distant_extractor
+                     # or (p.begin > 0 and re.match(alnum, text[p.begin-1:p.begin+1], re.IGNORECASE))
+                     # or (p.end < len(text) and re.match(alnum, text[p.end-1:p.end+1], re.IGNORECASE))
+                          ])
 
-        return labels + negatives
+        return labels + negatives + list(self._external(text, labels, tag))
 
     def _pairwise(self, phrases: List[PhraseLabel], tag: str):
         first_it, second_it = itertools.tee(phrases)
@@ -281,11 +326,22 @@ class Extractor:
     def _intersect(self, phrases: List[PhraseLabel], length, tag: str):
         for phrase in phrases:
             for mid in range(phrase.begin + 1, phrase.end):
-                for left in range(max(0, phrase.begin - 5), phrase.begin):
+                for left in range(max(0, phrase.begin - 10), phrase.begin):
                     yield PhraseLabel(left, mid, **{tag: False})
 
-                for right in range(phrase.end + 1, min(phrase.end + 6, length) + 1):
+                for right in range(phrase.end + 1, min(phrase.end + 11, length)):
                     yield PhraseLabel(mid, right, **{tag: False})
+
+    def _external(self, text, phrases: List[PhraseLabel], tag: str):
+        length = len(text)
+        for phrase in phrases:
+            for left in range(max(0, phrase.begin - 5), phrase.begin):
+                if text[left:phrase.end] in self.distant_extractor:
+                    yield PhraseLabel(left, phrase.end, **{tag: True})
+
+            for right in range(phrase.end + 1, min(phrase.end + 6, length)):
+                if text[phrase.begin:right] in self.distant_extractor:
+                    yield PhraseLabel(phrase.begin, right, **{tag: True})
 
     def _word_negatives(self, phrases: List[Tuple[int, int]], tag: str):
         first_it, second_it, third_it = itertools.tee(phrases, 3)

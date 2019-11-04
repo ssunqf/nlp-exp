@@ -352,7 +352,7 @@ class PUClassifier(nn.Module):
 
 # positive pointwise mutual information
 class PhraseClassifier(nn.Module):
-    def __init__(self, name, hidden_dim, max_length=15, dropout=0.3):
+    def __init__(self, name, hidden_dim, max_length=20, dropout=0.3):
         super(PhraseClassifier, self).__init__()
 
         self.name = name
