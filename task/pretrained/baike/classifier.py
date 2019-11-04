@@ -7,12 +7,13 @@ import itertools
 
 import torch
 from torch import nn
+from torch.nn import intrinsic as nni
 from torch.nn import functional as F
 from torchtext.vocab import Vocab
 
-from task.pretrained.transformer.attention import MultiHeadedAttention
+from .attention import MultiHeadedAttention
 
-from .base import Label
+from .base import Label, make_masks
 
 
 class SoftmaxLoss(nn.Module):
@@ -49,11 +50,6 @@ class ContextClassifier(nn.Module):
 
         self.hidden2label = nn.Linear(label_dim, len(voc), bias=True)
 
-        self.context2ffn = nn.Sequential(
-            nn.Linear(hidden_dim * 2, self.label_dim),
-            nn.Tanh(),
-        )
-
         self.phrase2ffn = nn.Sequential(
             nn.Linear(hidden_dim * 2, self.label_dim),
             nn.Tanh(),
@@ -72,20 +68,14 @@ class ContextClassifier(nn.Module):
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    # context = self._context_feature(hidden, bid, label.begin, label.end)
-                    # context_features.append(context)
-                    # context_tags.append(label.tags)
-
                     phrase = self._phrase_feature(hidden, bid, label.begin, label.end)
                     phrase_features.append(phrase)
                     phrase_tags.append(label.tags)
 
         if len(phrase_tags) > 0:
-            # context_features = self.hidden2label(self.context2ffn(torch.stack(context_features, dim=0)))
             phrase_features = self.hidden2label(self.phrase2ffn(torch.stack(phrase_features, dim=0)))
             return {
                 'loss': self.loss(phrase_features, phrase_tags)
-                # 'loss': (self.loss(context_features, context_tags) + self.loss(phrase_features, phrase_tags)) / 2
             }
         else:
             return {
@@ -101,21 +91,13 @@ class ContextClassifier(nn.Module):
         for bid, sen_labels in enumerate(labels):
             for label in sen_labels:
                 if label.tags.size(0) > 0:
-                    # context = self._context_feature(hidden, bid, label.begin, label.end)
-                    # context_features.append(context)
-                    # context_tags.append((bid, label))
 
                     phrase = self._phrase_feature(hidden, bid, label.begin, label.end)
                     phrase_features.append(phrase)
                     phrase_tags.append((bid, label))
 
-        context_results = [[] for _ in range(len(labels))]
         phrase_results = [[] for _ in range(len(labels))]
         if len(phrase_tags) > 0:
-            # context_logits = self.hidden2label(self.context2ffn(torch.stack(context_features, dim=0)))
-            # scores, indexes = self.loss.predict(context_logits, 5)
-            # for (bid, label), topk in zip(context_tags, indexes):
-            #    context_results[bid].append((label, topk.tolist()))
 
             phrase_logits = self.hidden2label(self.phrase2ffn(torch.stack(phrase_features, dim=0)))
             scores, indexes = self.loss.predict(phrase_logits, 5)
@@ -124,7 +106,6 @@ class ContextClassifier(nn.Module):
 
         return {
             self.name: {
-                # 'context': context_results,
                 'phrase': phrase_results
             }
         }
@@ -132,16 +113,13 @@ class ContextClassifier(nn.Module):
     def named_embedding(self):
         return self.name, self.hidden2label.weight, self.voc.itos
 
-    def _context_feature(self,
-                         hidden: torch.Tensor,
-                         bid: int, begin: int, end: int):
-        return torch.cat((hidden[begin-1, bid, :self.hidden_dim], hidden[end, bid, self.hidden_dim:]), dim=-1)
-
     def _phrase_feature(self,
                         hidden: torch.Tensor,
                         bid: int, begin: int, end: int):
-        return torch.cat((hidden[end-1, bid, :self.hidden_dim] - hidden[begin-1, bid, :self.hidden_dim],
-                          hidden[begin, bid, self.hidden_dim:] - hidden[end, bid, self.hidden_dim:], ), dim=-1)
+        return torch.cat((
+            hidden[end-1, bid, :self.hidden_dim] - hidden[begin-1, bid, :self.hidden_dim],
+            hidden[end, bid, self.hidden_dim:] - hidden[begin, bid, self.hidden_dim:],
+        ), dim=-1)
 
 
 class LMClassifier(nn.Module):
@@ -165,7 +143,6 @@ class LMClassifier(nn.Module):
 
         self.context2token = nn.Linear(voc_dim, voc_size)
         if shared_weight is not None:
-            assert self.context2token.weight.size() == shared_weight.size()
             self.context2token.weight = shared_weight
 
         self.inv_temperature = nn.Parameter(torch.tensor([1.0], dtype=torch.float))
@@ -201,13 +178,26 @@ def pairwise(iterable):
     return zip(a, b)
 
 
-class PhraseClassifier(nn.Module):
+class PUClassifier(nn.Module):
     def __init__(self, name, hidden_dim, max_length=15, dropout=0.3):
-        super(PhraseClassifier, self).__init__()
+        super(PUClassifier, self).__init__()
 
         self.name = name
         self.hidden_dim = hidden_dim
         self.max_length = max_length
+
+        self.left_linear = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim * 2)
+        )
+
+        self.middle_linear = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim * 2)
+        )
+
+        self.right_linear = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim * 2)
+        )
+
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim * 2, 1),
             nn.Sigmoid()
@@ -267,6 +257,7 @@ class PhraseClassifier(nn.Module):
                   hidden: torch.Tensor, lens: torch.Tensor,
                   phrases: List[List[Tuple[int, int, int]]]) -> Tuple[List[Tuple[int, int, int]],
                                                                     torch.Tensor, torch.Tensor, torch.Tensor]:
+
         device = hidden.device
         positive_samples, negative_samples, noise_samples = [], [], []
         for bid, sen_phrases in enumerate(phrases):
@@ -354,24 +345,22 @@ class PhraseClassifier(nn.Module):
 
         return samples, features, targets, weights
 
-    def _span_embed(self, hidden: torch.Tensor, begin: int, end: int):
-        if not(0 < begin < end < hidden.size(0)):
-            print(begin, end, hidden.size(0))
-        assert 0 < begin < end < hidden.size(0)
-        return torch.cat((hidden[end - 1, :self.hidden_dim] - hidden[begin - 1, :self.hidden_dim],
-                          hidden[begin, self.hidden_dim:] - hidden[end, self.hidden_dim:]), dim=-1)
+    def _span_embed(self, left: torch.Tensor, middle: torch.Tensor, right: torch.Tensor, begin: int, end: int):
+
+        return left[begin] + middle[begin:end] + right[end-1]
 
 
 # positive pointwise mutual information
-class PPMI(nn.Module):
+class PhraseClassifier(nn.Module):
     def __init__(self, name, hidden_dim, max_length=15, dropout=0.3):
-        super(PPMI, self).__init__()
+        super(PhraseClassifier, self).__init__()
 
         self.name = name
         self.hidden_dim = hidden_dim
         self.max_length = max_length
+
         self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim * 6, hidden_dim * 2),
+            nn.Linear(hidden_dim * 2, hidden_dim * 2),
             nn.ReLU(),
             nn.Linear(hidden_dim * 2, 1),
             nn.Sigmoid()
@@ -381,7 +370,6 @@ class PPMI(nn.Module):
                 hidden: torch.Tensor,
                 lens: torch.Tensor,
                 phrases: List[List[Tuple[int, int, int, float]]]) -> Dict[str, torch.Tensor]:
-
         samples, features, targets, weigths = self._featured(hidden, lens, phrases)
         if len(samples) == 0:
             loss = torch.tensor([0.0], device=hidden.device)
@@ -389,7 +377,7 @@ class PPMI(nn.Module):
             loss = F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1), weight=weigths.unsqueeze(-1))
 
         return {
-            'loss': loss,
+            'loss': loss
         }
 
     def predict(self,
@@ -417,10 +405,11 @@ class PPMI(nn.Module):
         for bid in range(lens.size(0)):
             samples = []
             features = []
-            for begin in range(1, lens[bid] - 1):
+            for begin in range(1, lens[bid].item() - 1):
                 for step in range(2, min(self.max_length + 1, lens[bid] - begin)):
                     samples.append((begin, begin + step))
-                    features.append(self._span_embed(hidden[:, bid], begin, begin + step))
+                    features.append(self._span_embed(hidden[:, bid],
+                                                     begin, begin + step))
             if len(features) > 0:
                 features = torch.stack(features, dim=0)
                 probs = self.ffn(features).squeeze(-1).tolist()
@@ -432,7 +421,8 @@ class PPMI(nn.Module):
         return phrases
 
     def _featured(self,
-                  hidden: torch.Tensor, lens: torch.Tensor,
+                  hidden: torch.Tensor,
+                  lens: torch.Tensor,
                   phrases: List[List[Tuple[int, int, int, float]]]) -> Tuple[List[Tuple[int, int, int]],
                                                                     torch.Tensor, torch.Tensor, torch.Tensor]:
         device = hidden.device
@@ -474,9 +464,6 @@ class PPMI(nn.Module):
         return samples, features, targets, weights
 
     def _span_embed(self, hidden: torch.Tensor, begin: int, end: int):
-        '''
-        return torch.cat((hidden[end - 1, :self.hidden_dim] - hidden[begin - 1, :self.hidden_dim],
+        return torch.cat((hidden[end-1, :self.hidden_dim] - hidden[begin-1, :self.hidden_dim],
                           hidden[begin, self.hidden_dim:] - hidden[end, self.hidden_dim:]), dim=-1)
-        '''
-        mean = hidden[begin:end].mean(dim=0)
-        return torch.cat((hidden[begin], mean, hidden[end]), dim=-1)
+

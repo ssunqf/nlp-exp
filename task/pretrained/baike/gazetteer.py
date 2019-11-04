@@ -5,7 +5,7 @@ import math
 from typing import Dict, Iterable, List, Tuple
 from collections import defaultdict, Counter, OrderedDict
 import json
-from .base import listfile, mixed_open
+from .base import listfile, smart_open
 import os
 from torch import nn
 from torchtext import data
@@ -198,7 +198,7 @@ class WordDictionary(Field):
 
     @staticmethod
     def load(path: str, **kwargs):
-        with mixed_open(path) as file:
+        with smart_open(path) as file:
             lfreq = {}
             ltotal = 0.
             max_freq = 0

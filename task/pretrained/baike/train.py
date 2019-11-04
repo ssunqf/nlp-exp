@@ -7,26 +7,21 @@ import json
 import os
 import random
 import time
-from typing import Dict, Tuple
 from collections import Counter
-
-from tabulate import tabulate
+from typing import Dict
 
 import torch
-from tensorboardX import SummaryWriter
+import torch.quantization
 from torch import nn, optim
+from torch.utils.tensorboard import SummaryWriter
 from torchtext.vocab import Vocab
 from tqdm import tqdm
 
-from task.pretrained.transformer.attention import TransformerLayer
 from .base import INIT_TOKEN, EOS_TOKEN, MASK_TOKEN, PAD_TOKEN, UNK_TOKEN
-from .embedding import WindowEmbedding
-from .classifier import ContextClassifier, LMClassifier, PhraseClassifier, PPMI
-from .data import Field, LabelField, PhraseField, lazy_iter
-from .encoder import StackRNN, ElmoEncoder
+from .classifier import ContextClassifier, LMClassifier, PhraseClassifier
+from .data import Field, LabelField, PhraseField, lazy_iter, DatasetIterator, ProcessIterator
+from .encoder import StackRNN
 from .model import Model
-
-from .transformer import Embeddings, Transformer
 
 
 class Trainer:
@@ -182,7 +177,7 @@ class Trainer:
 
     def pool_dataset(self, dataset_it, pool_size=5):
 
-        with tqdm(total=len(dataset_it.dataset), desc='train') as train_tqdm:
+        with tqdm(desc='train') as train_tqdm:
             pool = []
             for batch in dataset_it:
                 train_tqdm.update(len(batch))
@@ -198,62 +193,60 @@ class Trainer:
         total_batch, start = 1e-10, time.time()
         label_losses = Counter()
         num_iterations = 0
-        for train_it, valid_it in tqdm(self.dataset_it, desc='dataset'):
-            for pool in self.pool_dataset(train_it):
-                num_iterations += 1
-                losses = self.acc_train_one(pool)
 
-                label_losses.update(losses)
+        # train_it = ProcessIterator(self.dataset_it)
+        valid_it = self.dataset_it.valid
+        for pool in self.pool_dataset(self.dataset_it):
+            num_iterations += 1
+            losses = self.acc_train_one(pool)
 
-                total_batch += len(pool)
+            label_losses.update(losses)
 
-                if num_iterations % self.valid_step == 0:
+            total_batch += len(pool)
 
-                    valid_losses = self.valid(valid_it)
-                    total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
+            if num_iterations % self.valid_step == 0:
 
-                    self.checkpoint(num_iterations, total_valid_loss)
+                valid_losses = self.valid(valid_it)
+                total_valid_loss = sum(l for n, l in valid_losses.items()) / len(valid_losses)
 
-                    label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
+                self.checkpoint(num_iterations, total_valid_loss)
 
+                label_losses = {label: (loss/total_batch) for label, loss in label_losses.items()}
+
+                self.summary_writer.add_scalars(
+                    'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)},
+                    num_iterations)
+                self.summary_writer.add_scalars(
+                    'loss', {('train_%s' % n) : l for n, l in label_losses.items()},
+                    num_iterations)
+
+                self.summary_writer.add_scalars(
+                    'loss', {'valid_mean_loss': total_valid_loss},
+                    num_iterations)
+                self.summary_writer.add_scalars(
+                    'loss', {('valid_%s' % n) : l for n, l in valid_losses.items()},
+                    num_iterations)
+
+                total_batch, start = 1e-10, time.time()
+                label_losses = Counter()
+
+            if num_iterations % (self.valid_step * 1) == 0:
+                '''
+                for tag, mat, metadata in self.model.named_embeddings():
+                    mat = mat[:self.config.projector_max_size]
+                    metadata = metadata[:self.config.projector_max_size]
+                    metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
+                    self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
+                '''
+
+                for n, scores in self.metrics(valid_it).items():
                     self.summary_writer.add_scalars(
-                        'loss', {'train_mean_loss': sum(l for _, l in label_losses.items())/len(label_losses)},
-                        num_iterations)
-                    self.summary_writer.add_scalars(
-                        'loss', {('train_%s' % n) : l for n, l in label_losses.items()},
+                        'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()},
                         num_iterations)
 
-                    self.summary_writer.add_scalars(
-                        'loss', {'valid_mean_loss': total_valid_loss},
-                        num_iterations)
-                    self.summary_writer.add_scalars(
-                        'loss', {('valid_%s' % n) : l for n, l in valid_losses.items()},
-                        num_iterations)
-
-                    total_batch, start = 1e-10, time.time()
-                    label_losses = Counter()
-
-                if num_iterations % (self.valid_step * 1) == 0:
-                    for tag, mat, metadata in self.model.named_embeddings():
-                        '''
-                        if len(metadata) > self.config.projector_max_size:
-                            half_size = self.config.projector_max_size // 2
-                            mat = torch.cat([mat[:half_size], mat[-half_size:]], dim=0)
-                            metadata = metadata[:half_size] + metadata[-half_size:]
-                        '''
-                        mat = mat[:self.config.projector_max_size]
-                        metadata = metadata[:self.config.projector_max_size]
-                        metadata = ['<SPACE>' if len(tok.strip()) == 0 else tok for tok in metadata]
-                        self.summary_writer.add_embedding(mat, metadata=metadata, tag=tag)
-
-                    for n, scores in self.metrics(valid_it).items():
-                        self.summary_writer.add_scalars(
-                            'eval', {('%s_%s' % (n, sn)) : s for sn, s in scores.items()},
-                            num_iterations)
-
-            # reset optimizer
-            # if self.train_it.iterations > self.config.warmup_step:
-            #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
+        # reset optimizer
+        # if self.train_it.iterations > self.config.warmup_step:
+        #    self.optimizer = optim.Adam(self.model.parameters(), 1e-3, weight_decay=1e-3)
 
     def checkpoint(self, num_iterations, valid_loss):
         torch.save(self.state_dict(),
@@ -316,13 +309,12 @@ class Trainer:
         def batch_size_fn(new, count, sofar):
             return sofar + (len(new.text) + 99)//100
 
-        dataset_it = lazy_iter(fields,
-                               path=config.root, data_prefix=config.train_prefix, valid_file=config.valid_file,
+        dataset_it = DatasetIterator(fields,
+                               path=config.root, train_prefix=config.train_prefix, valid_file=config.valid_file,
                                distant_dict=config.distant_dict,
                                batch_size=config.batch_size,
                                batch_size_fn=batch_size_fn,
                                device=config.device)
-
         return dataset_it
 
     @classmethod
@@ -345,7 +337,7 @@ class Trainer:
         label_classifiers = nn.ModuleList([
             ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
 
-        phrase_classifier = PPMI(phrase_field.name, config.encoder_hidden_dim)
+        phrase_classifier = PhraseClassifier(phrase_field.name, config.encoder_hidden_dim)
         model = Model(text_field.vocab,
                       embedding,
                       encoder,
@@ -386,6 +378,7 @@ class Config:
         self.train_prefix = 'sentence.url'
         self.valid_file = 'valid.gz'
         self.distant_dict = 'distant.dic'
+        self.stop_dict = 'stopword.all'
 
         self.voc_max_size = 50000
         self.voc_min_freq = 50
@@ -398,19 +391,19 @@ class Config:
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 64
+        self.embedding_dim = 128
         self.encoder_mode = 'LSTM'  # ['RNN', 'LSTM', 'GRU']
-        self.encoder_hidden_dim = 64
+        self.encoder_hidden_dim = 256
         self.encoder_num_layers = 2
         self.attention_num_heads = None
 
-        self.label_dim = 64
+        self.label_dim = 128
 
         self.valid_step = 100
 
         self.batch_size = 16
 
-        self.dir_prefix = output_dir if output_dir else 'elmo-focal'
+        self.dir_prefix = output_dir if output_dir else 'output'
         self.checkpoint_dir = os.path.join(self.root, self.dir_prefix, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 

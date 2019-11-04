@@ -98,14 +98,14 @@ def clones(module, N):
     return torch.nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
-def make_masks(sens: torch.Tensor, lens: torch.Tensor) -> torch.Tensor:
-    masks = torch.ones(sens.size(), dtype=torch.uint8, device=sens.device)
+def make_masks(lens: torch.Tensor, device=None) -> torch.Tensor:
+    masks = torch.ones(lens.max().item(), lens.size(0), dtype=torch.uint8, device=device if device else lens.device)
     for i, l in enumerate(lens):
         masks[l:, i] = 0
     return masks
 
 
-def mixed_open(path: str, mode='r'):
+def smart_open(path: str, mode='r'):
     if path.endswith('.gz'):
         return gzip.open(path, mode=mode, compresslevel=6)
     else:
@@ -124,7 +124,7 @@ def listfile(path: str):
 
 
 def save_counter(path: str, counter: Counter):
-    with mixed_open(path, 'wt') as file:
+    with smart_open(path, 'wt') as file:
         file.write(json.dumps(counter.most_common(), ensure_ascii=False, indent=2))
 
 

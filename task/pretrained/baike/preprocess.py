@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 from tqdm import tqdm
 
 from task.util import utils
-from .base import PhraseLabel, mixed_open, save_counter
+from .base import PhraseLabel, smart_open, save_counter
 
 # LINK_PREFIX = 'link::'
 LINK_PREFIX = ''
@@ -39,7 +39,7 @@ class Voc:
     @staticmethod
     def create(path: str, mincount=1, blacklist=None):
         counter = {}
-        with mixed_open(path, mode='rt') as file:
+        with smart_open(path, mode='rt') as file:
             for line in tqdm(file, desc='load voc'):
                 line = line.strip()
                 if len(line) > 0:
@@ -174,7 +174,7 @@ class Labeler:
         subtitle_voc = Voc.create(subtitle_voc, mincount=mincount, blacklist=subtitle_blacklist)
 
         entities = dict()
-        with mixed_open(entity_path, mode='rt') as file:
+        with smart_open(entity_path, mode='rt') as file:
             for line in tqdm(file):
                 try:
                     entity = Entity.create(json.loads(line), key_voc, attr_voc, subtitle_voc)
@@ -223,9 +223,9 @@ if __name__ == '__main__':
 
     for corpus_file in listfile(args.corpus):
         print(corpus_file)
-        with mixed_open(corpus_file, mode='rt') as data:
+        with smart_open(corpus_file, mode='rt') as data:
             output_path = os.path.join(args.output, os.path.split(corpus_file)[1])
-            with mixed_open(output_path, 'wt') as output:
+            with smart_open(output_path, 'wt') as output:
                 for line in tqdm(data):
                     words, labels = labeler.label(line)
                     if 10 < len(words) < 300 and (len(labels) == 0 or labels[0].end - labels[0].begin < len(words)):

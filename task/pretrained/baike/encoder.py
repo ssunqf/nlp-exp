@@ -29,22 +29,42 @@ class StackRNN(nn.Module):
 
         num_directions = 2 if bidirectional else 1
 
-        self.layers = nn.ModuleList(
-            nn.RNNBase(mode,
-                       input_size if i == 0 else hidden_size * num_directions,
-                       hidden_size, num_layers=1,
-                       bias=bias, batch_first=batch_first,
-                       bidirectional=bidirectional) for i in range(num_layers)
-        )
+        if mode == 'LSTM':
+            self.layers = nn.ModuleList(
+                nn.LSTM(
+                           input_size if i == 0 else hidden_size * num_directions,
+                           hidden_size, num_layers=1,
+                           bias=bias, batch_first=batch_first,
+                           bidirectional=bidirectional) for i in range(num_layers)
+            )
+        else:
+            self.layers = nn.ModuleList(
+                nn.RNNBase(mode,
+                           input_size if i == 0 else hidden_size * num_directions,
+                           hidden_size, num_layers=1,
+                           bias=bias, batch_first=batch_first,
+                           bidirectional=bidirectional) for i in range(num_layers)
+            )
 
     def forward(self, input, hx=None):
         outputs = [input]
         h_ns = []
         for layer in self.layers:
-            output, hn = layer(outputs[-1])
+            output, hn = layer(self._variational_dropout(outputs[-1]))
             outputs.append(output)
             h_ns.append(hn)
         return outputs[1:], h_ns
+
+    def _variational_dropout(self, input):
+        if not self.training or self.dropout <= 0.:
+            return input
+
+        # Drop same mask across entire sequence
+        mask = input.new_empty(1, input.size(1), input.size(2), requires_grad=False).bernoulli_(1 - self.dropout)
+        input = input.masked_fill(mask == 0, 0) / (1 - self.dropout)
+
+        return input
+
 
 
 class LSTMLayer(nn.Module):

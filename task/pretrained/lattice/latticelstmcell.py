@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import math
+import json
 from typing import Dict, List, Tuple
 from collections import defaultdict, Counter
 import itertools
 
 import torch
 from torch.nn import Module, Parameter, init, Embedding, ModuleList, Dropout
+from ..baike import crf
 
 class Node:
     def __init__(self, inputs: List[int], outputs: List[int], **kwargs):
@@ -185,6 +187,7 @@ class LatticeLSTM(Module):
 
         self.num_layer = num_layer
         self.dropout = Dropout(dropout)
+
         self.forward_cells = ModuleList(
             LatticeLSTMCell(input_dim if layer_id == 0 else hidden_dim, hidden_dim//2)
             for layer_id in range(num_layer))
@@ -196,6 +199,7 @@ class LatticeLSTM(Module):
 
         left2rights = [lattice.left2right() for lattice in lattices]
         right2lefts = [lattice.right2left() for lattice in lattices]
+
         input = edge_input
 
         for layer_id in range(self.num_layer):
@@ -226,3 +230,40 @@ class LatticeEncoder(Module):
         hidden = self.lstm(lattices, edge_emb)
 
         return hidden
+
+
+class Model(Module):
+    def __init__(self, vocab, encoder: LatticeEncoder, task: Module):
+        super(Model, self).__init__()
+        self.vocab = vocab
+        self.encoder = encoder
+        self.task = task
+
+    def forward(self, lattices: List[Lattice], target):
+        hidden = self.encoder(lattices)
+
+        return {
+            'loss': self.task(hidden, target)
+        }
+
+
+class Vocab:
+    def __init__(self, counter: Counter, min_count, specials=['unk', '<s>', '</s>']):
+        self.itos = specials + [w for w, n in counter.most_common() if n > min_count]
+        self.stoi = dict((s, i) for i, s in enumerate(self.itos))
+
+    def __len__(self):
+        return len(self.itos)
+
+    @staticmethod
+    def load(path: str, min_count=10):
+        with open(path) as file:
+            counter = json.load(file)
+            return Vocab(counter, min_count)
+
+
+if __name__ == '__main__':
+
+    vocab = Vocab.load('lattice.voc')
+
+

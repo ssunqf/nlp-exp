@@ -7,14 +7,16 @@ import itertools
 import sys
 import re
 from tqdm import tqdm
-from pyhanlp import *
-from .flashtext import KeywordProcessor
 from typing import List, Tuple
 
 from .base import PhraseLabel
+from .tokenizer import hanlp_tokenizer as segmentor
 
+from .flashtext import KeywordProcessor
 
-url = re.compile("((?:(http|https|Http|Https|rtsp|Rtsp)://(?:(?:[a-zA-Z0-9$\\-_.+!*\\'(),;\\?\\&\\=]|(?:\\%[a-fA-F0-9]{2})){1,64}(?:\\:(?:[a-zA-Z0-9\\$\\-\\_\\.\\+\\!\\*\\'\\(\\)\\,\\;\\?\\&\\=]|(?:\\%[a-fA-F0-9]{2})){1,25})?\\@)?)?(?:(((([a-zA-Z0-9][a-zA-Z0-9\\-]*)*[a-zA-Z0-9]\\.)+((aero|arpa|asia|a[cdefgilmnoqrstuwxz])|(biz|b[abdefghijmnorstvwyz])|(cat|com|coop|c[acdfghiklmnoruvxyz])|d[ejkmoz]|(edu|e[cegrstu])|f[ijkmor]|(gov|g[abdefghilmnpqrstuwy])|h[kmnrtu]|(info|int|i[delmnoqrst])|(jobs|j[emop])|k[eghimnprwyz]|l[abcikrstuvy]|(mil|mobi|museum|m[acdeghklmnopqrstuvwxyz])|(name|net|n[acefgilopruz])|(org|om)|(pro|p[aefghklmnrstwy])|qa|r[eosuw]|s[abcdeghijklmnortuvyz]|(tel|travel|t[cdfghjklmnoprtvwz])|u[agksyz]|v[aceginu]|w[fs]|(δοκιμή|испытание|рф|срб|טעסט|آزمایشی|إختبار|الاردن|الجزائر|السعودية|المغرب|امارات|بھارت|تونس|سورية|فلسطين|قطر|مصر|परीक्षा|भारत|ভারত|ਭਾਰਤ|ભારત|இந்தியா|இலங்கை|சிங்கப்பூர்|பரிட்சை|భారత్|ලංකා|ไทย|テスト|中国|中國|台湾|台灣|新加坡|测试|測試|香港|테스트|한국|xn\\-\\-0zwm56d|xn\\-\\-11b5bs3a9aj6g|xn\\-\\-3e0b707e|xn\\-\\-45brj9c|xn\\-\\-80akhbyknj4f|xn\\-\\-90a3ac|xn\\-\\-9t4b11yi5a|xn\\-\\-clchc0ea0b2g2a9gcd|xn\\-\\-deba0ad|xn\\-\\-fiqs8s|xn\\-\\-fiqz9s|xn\\-\\-fpcrj9c3d|xn\\-\\-fzc2c9e2c|xn\\-\\-g6w251d|xn\\-\\-gecrj9c|xn\\-\\-h2brj9c|xn\\-\\-hgbk6aj7f53bba|xn\\-\\-hlcj6aya9esc7a|xn\\-\\-j6w193g|xn\\-\\-jxalpdlp|xn\\-\\-kgbechtv|xn\\-\\-kprw13d|xn\\-\\-kpry57d|xn\\-\\-lgbbat1ad8j|xn\\-\\-mgbaam7a8h|xn\\-\\-mgbayh7gpa|xn\\-\\-mgbbh1a71e|xn\\-\\-mgbc0a9azcg|xn\\-\\-mgberp4a5d4ar|xn\\-\\-o3cw4h|xn\\-\\-ogbpf8fl|xn\\-\\-p1ai|xn\\-\\-pgbs0dh|xn\\-\\-s9brj9c|xn\\-\\-wgbh1c|xn\\-\\-wgbl6a|xn\\-\\-xkc2al3hye2a|xn\\-\\-xkc2dl3a5ee0h|xn\\-\\-yfro4i67o|xn\\-\\-ygbi2ammx|xn\\-\\-zckzah|xxx)|y[et]|z[amw]))|((25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9])\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[0-9]))))(?:\\:\\d{1,5})?)(\\/(?:(?:[a-zA-Z0-9\\;\\/\\?\\:\\@\\&\\=\\#\\~\\-\\.\\+\\!\\*\\'\\(\\)\\,\\_])|(?:\\%[a-fA-F0-9]{2}))*)?")
+url = re.compile(
+    "((?:(http|https|Http|Https|rtsp|Rtsp)://(?:(?:[a-zA-Z0-9$\\-_.+!*\\'(),;\\?\\&\\=]|(?:\\%[a-fA-F0-9]{2})){1,64}(?:\\:(?:[a-zA-Z0-9\\$\\-\\_\\.\\+\\!\\*\\'\\(\\)\\,\\;\\?\\&\\=]|(?:\\%[a-fA-F0-9]{2})){1,25})?\\@)?)?(?:(((([a-zA-Z0-9][a-zA-Z0-9\\-]*)*[a-zA-Z0-9]\\.)+((aero|arpa|asia|a[cdefgilmnoqrstuwxz])|(biz|b[abdefghijmnorstvwyz])|(cat|com|coop|c[acdfghiklmnoruvxyz])|d[ejkmoz]|(edu|e[cegrstu])|f[ijkmor]|(gov|g[abdefghilmnpqrstuwy])|h[kmnrtu]|(info|int|i[delmnoqrst])|(jobs|j[emop])|k[eghimnprwyz]|l[abcikrstuvy]|(mil|mobi|museum|m[acdeghklmnopqrstuvwxyz])|(name|net|n[acefgilopruz])|(org|om)|(pro|p[aefghklmnrstwy])|qa|r[eosuw]|s[abcdeghijklmnortuvyz]|(tel|travel|t[cdfghjklmnoprtvwz])|u[agksyz]|v[aceginu]|w[fs]|(δοκιμή|испытание|рф|срб|טעסט|آزمایشی|إختبار|الاردن|الجزائر|السعودية|المغرب|امارات|بھارت|تونس|سورية|فلسطين|قطر|مصر|परीक्षा|भारत|ভারত|ਭਾਰਤ|ભારત|இந்தியா|இலங்கை|சிங்கப்பூர்|பரிட்சை|భారత్|ලංකා|ไทย|テスト|中国|中國|台湾|台灣|新加坡|测试|測試|香港|테스트|한국|xn\\-\\-0zwm56d|xn\\-\\-11b5bs3a9aj6g|xn\\-\\-3e0b707e|xn\\-\\-45brj9c|xn\\-\\-80akhbyknj4f|xn\\-\\-90a3ac|xn\\-\\-9t4b11yi5a|xn\\-\\-clchc0ea0b2g2a9gcd|xn\\-\\-deba0ad|xn\\-\\-fiqs8s|xn\\-\\-fiqz9s|xn\\-\\-fpcrj9c3d|xn\\-\\-fzc2c9e2c|xn\\-\\-g6w251d|xn\\-\\-gecrj9c|xn\\-\\-h2brj9c|xn\\-\\-hgbk6aj7f53bba|xn\\-\\-hlcj6aya9esc7a|xn\\-\\-j6w193g|xn\\-\\-jxalpdlp|xn\\-\\-kgbechtv|xn\\-\\-kprw13d|xn\\-\\-kpry57d|xn\\-\\-lgbbat1ad8j|xn\\-\\-mgbaam7a8h|xn\\-\\-mgbayh7gpa|xn\\-\\-mgbbh1a71e|xn\\-\\-mgbc0a9azcg|xn\\-\\-mgberp4a5d4ar|xn\\-\\-o3cw4h|xn\\-\\-ogbpf8fl|xn\\-\\-p1ai|xn\\-\\-pgbs0dh|xn\\-\\-s9brj9c|xn\\-\\-wgbh1c|xn\\-\\-wgbl6a|xn\\-\\-xkc2al3hye2a|xn\\-\\-xkc2dl3a5ee0h|xn\\-\\-yfro4i67o|xn\\-\\-ygbi2ammx|xn\\-\\-zckzah|xxx)|y[et]|z[amw]))|((25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9])\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[0-9]))))(?:\\:\\d{1,5})?)(\\/(?:(?:[a-zA-Z0-9\\;\\/\\?\\:\\@\\&\\=\\#\\~\\-\\.\\+\\!\\*\\'\\(\\)\\,\\_])|(?:\\%[a-fA-F0-9]{2}))*)?")
+
 
 # http://www.hankcs.com/nlp/part-of-speech-tagging.html#h2-8
 class RulePhraseExtractor:
@@ -31,7 +33,7 @@ class RulePhraseExtractor:
 
     specials = {
         'g', 'gb', 'gbc', 'gc', 'gg', 'gi', 'gm', 'gp', 'j', 'm', 'mg', 'Mg', 'mq',
-        'nb', 'nba', 'nbc', 'nbp', 'nf', 'ng', 'nh', 'nhb', 'nhm',
+        'n', 'nb', 'nba', 'nbc', 'nbp', 'nf', 'ng', 'nh', 'nhb', 'nhm',
         'ni', 'nic', 'nis', 'nit', 'nm', 'nmc', 'nn', 'nnd', 'nnt', 'nr', 'nr1', 'nr2', 'nrf', 'nrj',
         'ns', 'nsf', 'nt', 'ntc', 'ntcb', 'ntcf', 'ntch', 'nth', 'nto', 'nts', 'ntu', 'nx', 'nz',
         'q', 'qg', 'qt', 'qv', 'r', 'rg', 'Rg', 'rr', 'ry' 'rys', 'ryt', 'ryv', 'rz', 'rzs',
@@ -71,6 +73,7 @@ class RulePhraseExtractor:
                       {<ns.*><n.*|vn|z>*<nnt>}
                       <w-、>{<f><n.*|vn>+}<w-、>
             TITLE: <w_《|w_【>{<.*>+}<w_》|w_】>
+                   }<w_》|w_】><.*>*<w_《|w_【>{
         """
 
         self.noise_grammar = """
@@ -91,12 +94,13 @@ class RulePhraseExtractor:
         self.entity_parser = nltk.RegexpParser(self.entity_grammar)
         self.noise_parser = nltk.RegexpParser(self.noise_grammar)
 
-    def extract(self, words: List[str], tags: List[str], offsets: List[Tuple[int, int]]) -> List[PhraseLabel]:
-        labels = [PhraseLabel(begin, end, hanlp=(tag in self.specials))
-                  for (begin, end), word, tag in zip(offsets, words, tags)
-                  if tag in self.specials or tag in self.unused]
+    def extract(self, words: List[str], tags: List[str], spans: List[Tuple[int, int]]) -> List[PhraseLabel]:
+        labels = [PhraseLabel(begin, end, hanlp=True)  # tag in self.specials)
+                  for (begin, end), word, tag in zip(spans, words, tags)
+                  # if tag in self.specials or tag in self.unused
+                  ]
 
-        for (begin, end), word, tag in zip(offsets, words, tags):
+        for (begin, end), word, tag in zip(spans, words, tags):
             if tag in self.specials and end - begin > 1:
                 mid = random.randint(begin + 1, end - 1)
                 labels.append(PhraseLabel(begin, mid, hanlp=False))
@@ -105,7 +109,7 @@ class RulePhraseExtractor:
         terms = [(
             (begin, end, word),
             '%s_%s' % (tag, word) if word in ['《', '》', '（', '）', '【', '】', '学会', '人'] else tag)
-            for (begin, end), word, tag in zip(offsets, words, tags)]
+            for (begin, end), word, tag in zip(spans, words, tags)]
 
         chunks = self.entity_parser.parse(terms)
         for node in chunks.subtrees(filter=lambda n: n.height() != chunks.height()):
@@ -129,6 +133,7 @@ def pairwise(iterable):
     a, b = itertools.tee(iterable)
     next(b, None)
     return zip(a, b)
+
 
 '''
 class PhraseNode:
@@ -176,33 +181,29 @@ class Tree:
 
 class Extractor:
     max_length = 15
+
     def __init__(self, keyword_extractor: KeywordProcessor):
         self.distant_extractor = keyword_extractor
         self.rule_extractor = RulePhraseExtractor()
 
-    def extract(self, text: str, labels: List[PhraseLabel]):
-        labels = self._baike_negative(text, labels)
-        labeled_offsets = set((label.begin, label.end) for label in labels)
+    def extract(self, text: str, baike_labels: List[PhraseLabel]):
+        baike_labels = self._make_negatives(text, baike_labels, 'baike')
+        labeled_offsets = set((label.begin, label.end) for label in baike_labels)
 
-        terms = HanLP.segment(text)
-        words = [term.word for term in terms]
-        tags = [str(term.nature) for term in terms]
-        offsets = []
-        begin = 0
-        for word in words:
-            try:
-                begin = text.index(word, begin)
-            except Exception as e:
-                print(e)
+        '''
+        tree = segmentor.to_tree(text)
+        words = [word for (word, _),  _ in tree.pos()]
+        labels = [label for _, label in tree.pos()]
+        spans = [span for (_, span), _ in tree.pos()]
 
-            offsets.append((begin, begin + len(word)))
-            begin += len(word)
 
-        rule_labels = [label for label in self.rule_extractor.extract(words, tags, offsets)
+        rule_labels = [label for label in self.rule_extractor.extract(words, labels, spans)
                        if (label.begin, label.end) not in labeled_offsets]
         labeled_offsets.update((label.begin, label.end) for label in rule_labels)
 
-        distant_labels = [label for label in self.distant(text) if (label.begin, label.end) not in labeled_offsets]
+        rule_labels.extend(self._word_negatives(spans, 'hanlp'))
+
+        distant_labels = [label for label in self.distant(text, words) if (label.begin, label.end) not in labeled_offsets]
 
         labeled_offsets.update((label.begin, label.end) for label in distant_labels)
         unlabels = []
@@ -210,8 +211,8 @@ class Extractor:
             end = random.randint(begin + 2, min(begin+self.max_length, len(text)))
             if (begin, end) not in labeled_offsets:
                 unlabels.append(PhraseLabel(begin, end, unlabel=False))
-
-        return np.array(labels + rule_labels + distant_labels + unlabels)
+        '''
+        return np.array(baike_labels)  # + rule_labels + distant_labels + unlabels)
 
     '''
     def distant(self, text, words, offsets):
@@ -238,43 +239,90 @@ class Extractor:
 
         return distant_labels
     '''
-    def distant(self, text):
-        return [PhraseLabel(begin, end, distant=True)
-                for keyword, begin, end in self.distant_extractor.extract_keywords(text, span_info=True)]
 
-    def _baike_negative(self, text: str, labels: List[PhraseLabel]):
+    def distant(self, text: str, words: List[str]):
+        return [PhraseLabel(begin, end, distant=True)
+                for keyword, begin, end in self.distant_extractor.extract_keywords(text, words, span_info=True)]
+
+    def _make_negatives(self, text: str, labels: List[PhraseLabel], tag: str):
         labels = sorted(labels, key=lambda p: (p.begin, p.end))
         negatives = []
 
-        negatives.extend(self._pairwise(labels))
-        negatives.extend(self._intersect(labels, len(text)))
+        negatives.extend(self._pairwise(labels, tag))
+        negatives.extend(self._intersect(labels, len(text), tag))
+
+        alnum = r'^([a-z][a-z]|\d\d)$'
+        negatives.extend([p for p in self._internal(labels, len(text), tag)
+                     if text[p.begin:p.end] not in self.distant_extractor
+                     or (p.begin > 0 and re.match(alnum, text[p.begin-1:p.begin+1], re.IGNORECASE))
+                     or (p.end < len(text) and re.match(alnum, text[p.end-1:p.end+1], re.IGNORECASE))])
 
         return labels + negatives
 
-    def _pairwise(self, phrases: List[PhraseLabel]):
+    def _pairwise(self, phrases: List[PhraseLabel], tag: str):
         first_it, second_it = itertools.tee(phrases)
         next(second_it, None)
         for first, second in zip(first_it, second_it):
-            for left in range(first.begin, first.end):
-                for right in range(second.begin, second.end):
-                    if left != first.begin or right != second.end:
-                        yield PhraseLabel(left, right, baike=False)
+            if second.begin - first.end < self.max_length:
+                for left in range(first.begin, first.end):
+                    for right in range(second.begin + 1, second.end + 1):
+                        if left != first.begin or right != second.end:
+                            yield PhraseLabel(left, right, **{tag: False})
 
-    def _intersect(self, phrases: List[PhraseLabel], length):
+    def _internal(self, phrases: List[PhraseLabel], length, tag: str):
         for phrase in phrases:
-            for mid in range(phrase.begin + 1, phrase.end - 1):
-                if mid - phrase.begin > 0:
+            for mid in range(phrase.begin + 1, phrase.end):
+                if mid - phrase.begin > 1:
                     yield PhraseLabel(phrase.begin, mid, unlabel=False)
-                if phrase.end - mid > 0:
+
+                if phrase.end - mid > 1:
                     yield PhraseLabel(mid, phrase.end, unlabel=False)
-                if phrase.begin > 0:
-                    yield PhraseLabel(random.randint(max(0, phrase.begin - self.max_length), phrase.begin), mid, baike=False)
-                if phrase.end < length:
-                    yield PhraseLabel(mid, random.randint(phrase.end + 1, min(phrase.end + self.max_length + 1, length)), baike=False)
+
+    def _intersect(self, phrases: List[PhraseLabel], length, tag: str):
+        for phrase in phrases:
+            for mid in range(phrase.begin + 1, phrase.end):
+                for left in range(max(0, phrase.begin - 5), phrase.begin):
+                    yield PhraseLabel(left, mid, **{tag: False})
+
+                for right in range(phrase.end + 1, min(phrase.end + 6, length) + 1):
+                    yield PhraseLabel(mid, right, **{tag: False})
+
+    def _word_negatives(self, phrases: List[Tuple[int, int]], tag: str):
+        first_it, second_it, third_it = itertools.tee(phrases, 3)
+        next(second_it, None)
+        next(third_it, None)
+        next(third_it, None)
+        for first, second, third in zip(first_it, second_it, third_it):
+            if first[1] - first[0] == 1:
+                continue
+            left = random.randint(first[0], first[1] - 1)
+            if second[1] - second[0] == 1:
+                yield PhraseLabel(random.randint(first[0] + 1, first[1] - 1), second[1], **{tag: False})
+            else:
+                right = random.randint(second[0] + 1, second[1])
+                if left != first[0] or right != second[1]:
+                    yield PhraseLabel(left, right, **{tag: False})
+
+            if third[1] - third[0] == 1:
+                yield PhraseLabel(random.randint(first[0] + 1, first[1] - 1), third[1], **{tag: False})
+            else:
+                right = random.randint(third[0] + 1, third[1])
+                if left != first[0] or right != third[1]:
+                    yield PhraseLabel(left, right, **{tag: False})
+
+            '''
+            for left in range(first[0], first[1]):
+                for right in range(second[0]+1, second[1]+1):
+                    if left != first[0] or right != second[1]:
+                        yield PhraseLabel(left, right, **{tag: False})
+                for right in range(third[0]+1, third[1]+1):
+                    if left != first[0] or right != third[1]:
+                        yield PhraseLabel(left, right, **{tag: False})
+            '''
 
     @classmethod
     def build_from_dict(cls, path: str):
-        processor = KeywordProcessor()
+        processor = KeywordProcessor(tokenize_func=lambda p: p)
         processor.from_list(path)
 
         return cls(processor)
@@ -285,4 +333,4 @@ if __name__ == '__main__':
     for line in sys.stdin:
         print(line)
         result = extractor.extract(line, [])
-        print([(phrase.begin, phrase.end, line[phrase.begin:phrase.end], phrase.labels ) for phrase in result])
+        print([(phrase.begin, phrase.end, line[phrase.begin:phrase.end], phrase.labels) for phrase in result])

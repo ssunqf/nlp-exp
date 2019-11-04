@@ -47,9 +47,10 @@ class LinearCRF(nn.Module):
         super(LinearCRF, self).__init__()
 
         self.hidden2emission = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size//2),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size//2, num_tags)
+            nn.Linear(hidden_size, num_tags)
         )
 
         self.attention = MultiHeadedAttention(
@@ -61,6 +62,7 @@ class LinearCRF(nn.Module):
         self.num_tags = num_tags
 
         self.transition_constraints = nn.Parameter(transition_constraints, requires_grad=False)
+
 
     @property
     def transition(self):
@@ -115,7 +117,6 @@ class LinearCRF(nn.Module):
                            hidden: torch.Tensor,
                            lens: torch.Tensor,
                            masks: torch.Tensor) -> torch.Tensor:
-
         emissions = self._emission(hidden, lens)
         forward_score = self._forward_score(emissions, lens)
         gold_score = self._gold_score(emissions, lens, masks.max(-1)[1])
@@ -285,7 +286,7 @@ class MaskedCRF(LinearCRF):
         emissions = self._emission(hidden, lens)
         forward_score = self._forward_score(emissions, lens)
         mask_score = self._mask_score(emissions, lens, tag_masks)
-        return (forward_score - mask_score).sum(), len(lens)
+        return (forward_score - mask_score).sum()
 
     def focal_loss(self, hidden: torch.Tensor, lens: torch.Tensor, tag_masks: torch.Tensor, gamma=2):
         emissions = self._emission(hidden, lens)

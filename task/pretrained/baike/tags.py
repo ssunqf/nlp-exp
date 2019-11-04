@@ -4,7 +4,7 @@ import math
 from typing import List, Tuple, Dict
 from collections import Counter, OrderedDict
 from jieba import posseg
-from .base import to_bmes, mixed_open
+from .base import to_bmes, smart_open
 import torch
 from torch import nn
 from torchtext import data
@@ -49,7 +49,7 @@ class DictTagger(Tagger):
     def load(cls, name, path, sep='\t'):
         words = set()
         max_length = 0
-        with mixed_open(path) as file:
+        with smart_open(path) as file:
             for lineno, line in enumerate(file, 1):
                 line = line.strip()
                 if sep is None:
@@ -91,7 +91,7 @@ class DictWithTypeTagger(Tagger):
         words = {}
         max_length = 0
         max_freq = 0
-        with mixed_open(path) as file:
+        with smart_open(path) as file:
             for lineno, line in enumerate(file, 1):
                 line = line.strip()
                 word, freq, type = line.rsplit(maxsplit=2)
@@ -225,7 +225,7 @@ class NgramTagger(Tagger):
     def load(cls, name, path, sep='\t'):
         words = set()
         max_length = 0
-        with mixed_open(path) as file:
+        with smart_open(path) as file:
             for lineno, line in enumerate(file, 1):
                 line = line.strip()
                 if sep is None:

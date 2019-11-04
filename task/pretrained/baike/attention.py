@@ -9,9 +9,13 @@ from ..transformer.base import PositionwiseFeedForward
 
 
 class GlobalAttention(nn.Module):
-    def __init__(self, dropout=0.1):
+    def __init__(self, num_head, head_dim, dropout=0.1):
         super(GlobalAttention, self).__init__()
+        self.num_head = num_head
         self.dropout = nn.Dropout(dropout)
+
+        self.temperature = nn.Parameter(torch.tensor([math.log(head_dim)]), requires_grad=False)
+        # self.temperature = nn.Parameter(torch.tensor([math.log(head_dim)] * self.num_head), requires_grad=True)
 
     def forward(self,
                 query: torch.Tensor,
@@ -19,8 +23,7 @@ class GlobalAttention(nn.Module):
                 value: torch.Tensor,
                 mask=None) -> Tuple[torch.Tensor, torch.Tensor]:
         "Compute 'Scaled Dot Product Attention'"
-        head_dim = query.size(-1)
-        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(head_dim)
+        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / self.temperature
         if mask is not None:
             mask = mask.unsqueeze(-2)
             attention_scores = attention_scores.masked_fill(mask == 0, MIN_SCORE)
@@ -91,7 +94,7 @@ class MultiHeadedAttention(nn.Module):
         self.query_linearity = nn.Linear(hidden_dim, hidden_dim)
         self.key_linearity = nn.Linear(hidden_dim, hidden_dim)
         self.value_linearity = nn.Linear(hidden_dim, hidden_dim)
-        self.attention = GlobalAttention(dropout) if atten_window_size is None or atten_window_size < 0 \
+        self.attention = GlobalAttention(num_head, self.head_dim, dropout) if atten_window_size is None or atten_window_size < 0 \
             else LocalAttention(atten_window_size, dropout)
 
         self.reset_parameters()
