@@ -270,12 +270,12 @@ class PhraseClassifier(nn.Module):
         device = forwards.device
         positive_samples, negative_samples, boundary_samples, internal_samples = [], [], [], []
         for bid, sen_phrases in enumerate(phrases):
-            for (f_b, f_e), (s_b, s_e) in pairwise(sen_phrases):
-                for mid in range(f_b+1, f_e):
-                    negative_samples.append((bid, mid, s_e))
-
-                for mid in range(s_b+1, s_e-1):
-                    negative_samples.append((bid, f_b, mid))
+            negative_samples.extend(
+                (bid, left, right)
+                for (f_b, f_e), (s_b, s_e) in pairwise(sen_phrases)
+                for left in range(f_b, f_e)
+                for right in range(s_b+1, s_e+1)
+                if (f_b != left or right != s_e))
 
             for begin, end in sen_phrases:
                 if end - begin > 1:
@@ -316,7 +316,7 @@ class PhraseClassifier(nn.Module):
             positive_total = positive_weights.sum()
             weights = torch.cat((
                 positive_weights,
-                negative_weights * (2 * positive_total / negative_weights.sum()),
+                negative_weights * (5 * positive_total / negative_weights.sum()),
                 # boundary_weights * (positive_total * 0.4 / boundary_weights.sum()),
                 # internal_weights * (positive_total * 0.6 / internal_weights.sum())
             ), dim=-1)

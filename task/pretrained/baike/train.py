@@ -232,7 +232,7 @@ class Trainer:
                     total_batch, start = 1e-10, time.time()
                     label_losses = Counter()
 
-                if num_iterations % (self.valid_step) == 0:
+                if num_iterations % (self.valid_step * 5) == 0:
                     for tag, mat, metadata in self.model.named_embeddings():
                         '''
                         if len(metadata) > self.config.projector_max_size:
@@ -401,7 +401,7 @@ class Config:
 
         self.label_dim = 512
 
-        self.valid_step = 100
+        self.valid_step = 2000
 
         self.batch_size = 16
 
