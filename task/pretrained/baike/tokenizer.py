@@ -4,7 +4,6 @@ import sys
 from nltk import Tree
 from typing import List, Tuple
 from pyhanlp import SafeJClass
-from pyltp import Segmentor, Postagger, NamedEntityRecognizer
 
 Sentence = SafeJClass('com.hankcs.hanlp.corpus.document.sentence.Sentence')
 Word = SafeJClass('com.hankcs.hanlp.corpus.document.sentence.word.Word')
@@ -192,11 +191,8 @@ class LTP:
 
 hanlp_tokenizer = Tokenizer()
 
-# ltp_tokenizer = LTP()
 
 if __name__ == '__main__':
     for line in sys.stdin:
         line = line.strip()
-        print(ltp_tokenizer.to_word(line))
-        print(ltp_tokenizer.to_tree(line).pos())
 

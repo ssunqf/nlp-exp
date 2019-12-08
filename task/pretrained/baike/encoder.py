@@ -31,11 +31,10 @@ class StackRNN(nn.Module):
 
         if mode == 'LSTM':
             self.layers = nn.ModuleList(
-                nn.LSTM(
-                           input_size if i == 0 else hidden_size * num_directions,
-                           hidden_size, num_layers=1,
-                           bias=bias, batch_first=batch_first,
-                           bidirectional=bidirectional) for i in range(num_layers)
+                nn.LSTM(input_size if i == 0 else hidden_size * num_directions,
+                        hidden_size, num_layers=1,
+                        bias=bias, batch_first=batch_first,
+                        bidirectional=bidirectional) for i in range(num_layers)
             )
         else:
             self.layers = nn.ModuleList(

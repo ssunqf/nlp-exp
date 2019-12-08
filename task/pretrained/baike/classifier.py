@@ -11,8 +11,8 @@ from torch.nn import intrinsic as nni
 from torch.nn import functional as F
 from torchtext.vocab import Vocab
 
-from .attention import MultiHeadedAttention
-
+# from .attention import MultiHeadedAttention
+from task.pretrained.baike.attention import MultiHeadedAttention
 from .base import Label, make_masks
 
 
@@ -122,6 +122,115 @@ class ContextClassifier(nn.Module):
         ), dim=-1)
 
 
+class Overparam(nn.Module):
+    def __init__(self, nhid):
+        super().__init__()
+        self.l1 = nn.Linear(nhid, 2 * nhid)
+        self.nhid = nhid
+
+    def forward(self, x):
+        c, f = self.l1(x).split(self.nhid, dim=-1)
+        return torch.sigmoid(f) * torch.tanh(c)
+
+
+class Attention(nn.Module):
+    def __init__(self, hidden_dim, num_heads=1, dropout=None):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.qs = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
+        self.ks = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
+        self.vs = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
+
+        self.vq = Overparam(hidden_dim)
+
+        self.q_linear = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.qln = nn.LayerNorm(hidden_dim, eps=1e-12)
+
+        self.dropout = nn.Dropout(dropout) if dropout else None
+
+        assert hidden_dim % num_heads == 0
+
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+
+        self.scale_ratio = math.sqrt(hidden_dim)
+
+        self.output_linear = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, query, key, value, mask=None, batch_first=False):
+        qs, ks, vs = self.qs.sigmoid(), self.ks.sigmoid(), self.vq(self.vs.sigmoid())
+
+        query, key, value = qs * self.qln(self.q_linear(query)), ks * key, vs * value
+
+        if self.dropout:
+            query, key, value = self.dropout(query), key, self.dropout(value)
+
+        if not batch_first:
+            query, key, value = query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1)
+
+        attn_out, attn_weight = self._attention(query, key, value, mask)
+
+        if not batch_first:
+            attn_out.transpose(0, 1)
+
+        return attn_out
+
+    def _attention(self, query, key, value, mask):
+
+        batch_size, query_len, hidden_dim = query.size()
+        key_len = key.size(1)
+        assert hidden_dim == self.hidden_dim
+
+        query = query.view(batch_size, query_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key = key.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value = value.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / self.scale_ratio
+
+        if mask is not None:
+            mask = mask.view(batch_size, 1, query_len, key_len)
+            attention_scores = attention_scores + mask
+
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        if self.dropout:
+            attention_weights = self.dropout(attention_weights)
+
+        attention_weights = attention_weights.view(batch_size, self.num_heads, query_len, key_len)
+
+        return torch.matmul(attention_weights, value).transpose(1, 2).view(batch_size, query_len, self.hidden_dim).transpose(0, 1), attention_weights
+
+
+class LMAttention(nn.Module):
+    def __init__(self, hidden_dim, heads=1, dropout=None):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.forward_attention = Attention(hidden_dim, num_heads=1, dropout=dropout)
+        self.backward_attention = Attention(hidden_dim, num_heads=1, dropout=dropout)
+
+    def forward(self, hidden: torch.Tensor, lens: torch.Tensor):
+        seq_len, batch_size, hidden_dim = hidden.size()
+        assert hidden_dim == self.hidden_dim * 2
+        f, b = hidden.split(self.hidden_dim, dim=-1)
+
+        query = torch.cat([f[:-2], b[2:]], dim=-1)
+
+        f_mask = torch.full((batch_size, seq_len-2, seq_len-2), -float('Inf'), device=hidden.device, dtype=hidden.dtype)
+
+        for i, length in enumerate(lens.tolist()):
+            f_mask[i, :, :length-2] = f_mask[i, :, :length-2].triu(diagonal=1)
+        f_attn = self.forward_attention(query, f[:-2], f[:-2], f_mask)
+
+        b_mask = torch.full((batch_size, seq_len-2, seq_len-2), -float("Inf"), device=hidden.device, dtype=hidden.dtype)
+        for i, length in enumerate(lens.tolist()):
+            b_mask[i, :, :length-2] = b_mask[i, :, :length-2].tril(diagonal=-1)
+            b_mask[i, length-2:] = 0
+
+        b_attn = self.backward_attention(query, b[2:], b[2:], b_mask)
+
+        return torch.cat([f_attn, b_attn], dim=-1)
+
+
 class LMClassifier(nn.Module):
     def __init__(self,
                  voc_size: int,
@@ -136,6 +245,8 @@ class LMClassifier(nn.Module):
         self.voc_dim = voc_dim
         self.hidden_dim = hidden_dim
         self.padding_idx = padding_idx
+
+        self.lm_atten = LMAttention(self.hidden_dim, dropout=0.2)
         self.context_ffn = nn.Sequential(
             nn.Linear(hidden_dim * 2, voc_dim),
             nn.Tanh()
@@ -153,21 +264,22 @@ class LMClassifier(nn.Module):
                 lens: torch.Tensor) -> Dict[str, torch.Tensor]:
         seq_len, batch_size, dim = hidden.size()
         assert dim == self.hidden_dim * 2
-        middle = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
+        # context = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
+        context = self.lm_atten(hidden, lens)
 
-        logit = self.context2token(self.context_ffn(middle)) * self.inv_temperature
+        logit = self.context2token(self.context_ffn(context)) * self.inv_temperature
         return {
             'loss': F.cross_entropy(logit.view(-1, self.voc_size),
                                     tokens[1:-1].view(-1),
                                     ignore_index=self.padding_idx),
         }
 
-    def predict(self, hidden: torch.Tensor) -> torch.Tensor:
+    def predict(self, hidden: torch.Tensor, lens: torch.Tensor) -> torch.Tensor:
         seq_len, batch_size, dim = hidden.size()
         assert dim == self.hidden_dim * 2
-        middle = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
-
-        logit = self.context2token(self.context_ffn(middle)) * self.inv_temperature
+        # context = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
+        context = self.lm_atten(hidden, lens)
+        logit = self.context2token(self.context_ffn(context)) * self.inv_temperature
         return logit.max(dim=-1)[1]
 
 
@@ -360,9 +472,9 @@ class PhraseClassifier(nn.Module):
         self.max_length = max_length
 
         self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim * 2, 1),
+            nn.Linear(hidden_dim, 1),
             nn.Sigmoid()
         )
 
@@ -465,5 +577,8 @@ class PhraseClassifier(nn.Module):
 
     def _span_embed(self, hidden: torch.Tensor, begin: int, end: int):
         return torch.cat((hidden[end-1, :self.hidden_dim] - hidden[begin-1, :self.hidden_dim],
-                          hidden[begin, self.hidden_dim:] - hidden[end, self.hidden_dim:]), dim=-1)
+                          hidden[begin, self.hidden_dim:] - hidden[end, self.hidden_dim:],
+                          # hidden[begin:end].max(0)[0]
+                          ), dim=-1)
+
 

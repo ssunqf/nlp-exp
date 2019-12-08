@@ -39,6 +39,7 @@ class Model(nn.Module):
         hiddens, _ = self.encoder(self.embedding(text), lens)
 
         losses = {}
+
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
             losses[classifier.name] = classifier(hiddens[-1], labels)['loss']
@@ -69,7 +70,7 @@ class Model(nn.Module):
         for classifier in self.label_classifiers:
             labels = getattr(data, classifier.name)
             label_results.update(classifier.predict(hiddens[-1], labels))
-        lm_result = self.lm_classifier.predict(hiddens[0])
+        lm_result = self.lm_classifier.predict(hiddens[0], lens)
         phrase_result = self.phrase_classifier.predict(
             hiddens[-1], lens,
             getattr(data, self.phrase_classifier.name))

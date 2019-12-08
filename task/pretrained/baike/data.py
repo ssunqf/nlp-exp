@@ -78,14 +78,14 @@ class PhraseField(data.Field):
     def process_sentence(self, phrases: List[PhraseLabel]):
 
         def _process(phrase: PhraseLabel) -> Tuple[int, float]:
-            if 'baike' in phrase.labels:
-                return phrase.labels['baike'], 1.0
+            if 'gold' in phrase.labels:
+                return phrase.labels['gold'], 1.0
             if 'hanlp' in phrase.labels:
                 return phrase.labels['hanlp'], 0.5
             if 'distant' in phrase.labels:
                 return phrase.labels['distant'], 0.2
             if 'unlabel' in phrase.labels:
-                return phrase.labels['unlabel'], 0.1
+                return phrase.labels['unlabel'], 1.0
             return None, None
 
         results = []
@@ -145,9 +145,10 @@ class BaikeDataset(Dataset):
             # words = words.split(' ')
             chars = list(text)
             try:
-                labels = [PhraseLabel.from_json(label) for label in labels if len(label) > 0 and label.end - label.begin > 1]
+                labels = [PhraseLabel.from_json(label) for label in labels if len(label) > 0]
+                labels = [p for p in labels if p.end - p.begin > 1]
                 for label in labels:
-                    label.labels['baike'] = True
+                    label.labels['gold'] = True
 
                 labels = self.extractor.extract(text, labels)
 

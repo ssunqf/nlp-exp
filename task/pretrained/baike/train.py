@@ -89,6 +89,7 @@ class Trainer:
             if loss.requires_grad:
                 loss.backward()
 
+            del batch
         # Step 3. Compute the loss, gradients, and update the parameters by
         # calling optimizer.step()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5)
@@ -334,8 +335,9 @@ class Trainer:
                                      shared_weight=embedding.weight,
                                      padding_idx=text_field.vocab.stoi[PAD_TOKEN])
 
-        label_classifiers = nn.ModuleList([
-            ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields])
+        label_classifiers = nn.ModuleList(
+            [] #[ContextClassifier(field.name, field.vocab, config.encoder_hidden_dim, config.label_dim) for field in label_fields]
+            )
 
         phrase_classifier = PhraseClassifier(phrase_field.name, config.encoder_hidden_dim)
         model = Model(text_field.vocab,
@@ -362,7 +364,7 @@ class Trainer:
         dataset_it = cls.load_dataset(config, fields)
 
         model = cls.load_model(config, TEXT, label_fields, PHRASE_FIELD)
-
+        print(model)
         trainer = cls(config, model, dataset_it,
             TEXT.vocab,
             dict((field.name, field.vocab) for field in label_fields),
