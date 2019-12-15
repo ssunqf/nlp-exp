@@ -67,34 +67,57 @@ class PhraseField(data.Field):
 
     def __init__(self, name, *args, **kwargs):
         self.name = name
+        self.positive_count = 0
+        self.negative_count = 0
         super(PhraseField, self).__init__(sequential=False, *args, **kwargs)
+
+    def preprocess(self, phrases: List[PhraseLabel]):
+        for phrase in phrases:
+            flag, weight = self._label_weight(phrase)
+            if flag is True:
+                self.positive_count += weight
+            elif flag is False:
+                self.negative_count += weight
+
+        return phrases
+
+    def _label_weight(self, phrase: PhraseLabel) -> Tuple[int, float]:
+        if 'gold' in phrase.labels:
+            return phrase.labels['gold'], 1.0
+        if 'hanlp' in phrase.labels:
+            return phrase.labels['hanlp'], 0.5
+        if 'distant' in phrase.labels:
+            return phrase.labels['distant'], 0.2
+        if 'unlabel' in phrase.labels:
+            return phrase.labels['unlabel'], 1.0
+        return None, None
 
     def process(self,
                 batch: List[List[PhraseLabel]],
                 device=None) -> List[List[Tuple[int, int, int, float]]]:
 
-        return [self.process_sentence(phrases) for phrases in batch]
+        positive_weight = self.positive_count / (self.positive_count + self.negative_count + 1.0)
+        negative_weight = self.negative_count / (self.positive_count + self.negative_count + 1.0)
 
-    def process_sentence(self, phrases: List[PhraseLabel]):
+        return [self.process_sentence(phrases, positive_weight, negative_weight) for phrases in batch]
 
-        def _process(phrase: PhraseLabel) -> Tuple[int, float]:
-            if 'gold' in phrase.labels:
-                return phrase.labels['gold'], 1.0
-            if 'hanlp' in phrase.labels:
-                return phrase.labels['hanlp'], 0.5
-            if 'distant' in phrase.labels:
-                return phrase.labels['distant'], 0.2
-            if 'unlabel' in phrase.labels:
-                return phrase.labels['unlabel'], 1.0
-            return None, None
-
+    def process_sentence(self, phrases: List[PhraseLabel], positive_weight, negative_weight):
         results = []
         for phrase in phrases:
-            flag, weight = _process(phrase)
+            flag, weight = self._weight(phrase, positive_weight, negative_weight)
             if flag is not None:
                 results.append((phrase.begin + 1, phrase.end + 1, flag, weight))
 
         return results
+
+    def _weight(self, phrase: PhraseLabel, positive_weight, negative_weight):
+        flag, weight = self._label_weight(phrase)
+        if flag is True:
+            return flag, weight * positive_weight
+        elif flag is False:
+            return flag, weight * negative_weight
+
+        return None, None
 
     def make_negative(self, spans: List[Tuple[int, int]], tag):
         def _pairwise(first_it, second_it):
@@ -107,8 +130,6 @@ class PhraseField(data.Field):
 
         first_it, second_it = itertools.tee(spans)
         _pairwise(first_it, second_it)
-
-
 
 
 filter_pattern = re.compile('(merge_red.sh|merge_map.sh)')
@@ -124,8 +145,6 @@ class BaikeDataset(Dataset):
 
     def __init__(self, dataset: Union[str, List], fields: List, **kwargs):
         self.extractor = kwargs.pop('extractor')
-        noise_count = 0
-        good_count = 0
         examples = []
 
         def _source(path):
@@ -165,7 +184,6 @@ class BaikeDataset(Dataset):
             #if len(examples) > 500000:
             #    break
 
-        print('%d sentence have %d noise phrases and %d good phrases.' % (len(examples), noise_count, good_count))
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
     @classmethod
@@ -224,7 +242,7 @@ def is_eng_num(c):
 def is_phrase(tree: Tree):
 
     if tree.height() == 2:
-        return tree.label() in {'NN', 'NR', 'NT', 'VV', 'CD', 'M'}
+        return tree.label() in {'NN', 'NR', 'NT', 'CD'}
     labels = tree.label().split('-')
     if tree.height() >= 3:
         if labels[0] in {'QP'}:
@@ -235,7 +253,7 @@ def is_phrase(tree: Tree):
                 return False
             if len(tags.difference({'NN', 'NR'})) == 0:
                 return True
-        elif labels[0] in {'DNP', 'VP', 'LCP', 'DVP', 'PP', 'DP'}:
+        elif labels[0] in {'DNP', 'VP', 'LCP', 'DVP', 'PP', 'DP', 'IP'}:
             return False
 
     return None
@@ -283,7 +301,7 @@ def with_offset(tree: Tree):
 def load_ctb8():
     for sent in tqdm(corpus.parsed_sents(), desc='loading ctb8 dateset'):
         text, spans = with_offset(sent)
-        labels = [PhraseLabel(begin, end, **{'baike': label}) for (begin, end), label in spans.items() if label]
+        labels = [PhraseLabel(begin, end, **{'gold': label}) for (begin, end), label in spans.items() if label is not None]
         yield text, labels
 
 
@@ -331,18 +349,6 @@ class DatasetIterator:
                 shuffle=False,
                 sort_within_batch=True,
                 device=self.device)
-        '''
-        ctb = CTBDataset(self.fields)
-        ctb8, *_ = data.BucketIterator.splits(
-            [ctb],
-            batch_sizes=[self.batch_size],
-            batch_size_fn=self.batch_size_fn,
-            shuffle=True,
-            sort_within_batch=True,
-            repeat=True,
-            device=self.device)
-        self.ctb8 = iter(ctb8)
-        '''
 
     def _read_line(self, prefix):
         offset = 0
@@ -356,6 +362,7 @@ class DatasetIterator:
 
     def __iter__(self):
         def _sub_iter(examples):
+
             dataset = BaikeDataset(examples, self.fields, extractor=self.extractor)
 
             dataset_it, *_ = data.BucketIterator.splits(
@@ -368,7 +375,6 @@ class DatasetIterator:
 
             for batch in dataset_it:
                 yield batch
-                # yield next(self.ctb8)
 
         buffers = []
         for line in self._read_line(self.train_prefix):

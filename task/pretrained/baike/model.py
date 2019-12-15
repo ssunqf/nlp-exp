@@ -49,8 +49,8 @@ class Model(nn.Module):
 
         if self.phrase_classifier is not None:
             results = self.phrase_classifier(
-                hiddens[-1], lens,
-                getattr(data, self.phrase_classifier.name))
+                    hiddens[-1], lens,
+                    getattr(data, self.phrase_classifier.name))
             losses[self.phrase_classifier.name] = results['loss']
 
         return losses, lens.size(0)

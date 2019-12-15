@@ -42,6 +42,12 @@ class Trainer:
             weight_decay=1e-6
         )
 
+        try:
+            from apex import amp
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O1')
+        except ModuleNotFoundError:
+            pass
+
         self.dataset_it = dataset_it
 
         self.text_voc = text_voc
@@ -73,7 +79,7 @@ class Trainer:
             # if 'train_it' in states:
             #    self.train_it.load_state_dict(states['train_it'])
 
-    def load_checkpoint(self, path, strict=True):
+    def load_checkpoint(self, path, strict=False):
         states = torch.load(path)
         self.load_state_dict(states, strict=strict)
 

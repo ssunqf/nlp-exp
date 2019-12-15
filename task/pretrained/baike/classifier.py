@@ -7,9 +7,13 @@ import itertools
 
 import torch
 from torch import nn
-from torch.nn import intrinsic as nni
 from torch.nn import functional as F
 from torchtext.vocab import Vocab
+
+try:
+    from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
+except ModuleNotFoundError:
+    from torch.nn import LayerNorm
 
 # from .attention import MultiHeadedAttention
 from task.pretrained.baike.attention import MultiHeadedAttention
@@ -474,8 +478,7 @@ class PhraseClassifier(nn.Module):
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
+            nn.Linear(hidden_dim, 1)
         )
 
     def forward(self,
@@ -486,7 +489,8 @@ class PhraseClassifier(nn.Module):
         if len(samples) == 0:
             loss = torch.tensor([0.0], device=hidden.device)
         else:
-            loss = F.binary_cross_entropy(self.ffn(features), targets.unsqueeze(-1), weight=weigths.unsqueeze(-1))
+            loss = F.binary_cross_entropy_with_logits(
+                self.ffn(features), targets.unsqueeze(-1), weight=weigths.unsqueeze(-1))
 
         return {
             'loss': loss
@@ -501,7 +505,7 @@ class PhraseClassifier(nn.Module):
         if len(samples) == 0:
             return [[] for _ in range(len(phrases))]
 
-        preds = self.ffn(features)
+        preds = self.ffn(features).sigmoid()
 
         targets = targets.tolist()
         weights = weights.tolist()
@@ -524,7 +528,7 @@ class PhraseClassifier(nn.Module):
                                                      begin, begin + step))
             if len(features) > 0:
                 features = torch.stack(features, dim=0)
-                probs = self.ffn(features).squeeze(-1).tolist()
+                probs = self.ffn(features).sigmoid().squeeze(-1).tolist()
             else:
                 probs = []
 
@@ -551,7 +555,7 @@ class PhraseClassifier(nn.Module):
                     negative_weights.append(weight)
 
         samples = positive_samples + negative_samples
-        if len(positive_samples) > 0:
+        if len(samples) > 0:
 
             features = torch.stack(
                 [self._span_embed(hidden[:, bid], begin, end) for bid, begin, end in samples],
