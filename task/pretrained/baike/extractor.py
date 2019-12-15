@@ -413,12 +413,16 @@ class Extractor:
                     for sleft in range(left + 1, phrase.begin):
                         yield PhraseLabel(sleft, phrase.end, **{tag: False})
                     break
+                else:
+                    yield PhraseLabel(left, phrase.end, noise=False)
 
             for right in range(min(phrase.end + 5, length), phrase.end + 1, -1):
                 if text[phrase.end:right] in self.distant_extractor:
                     for sright in range(phrase.end + 1, right):
                         yield PhraseLabel(phrase.begin, sright, **{tag: False})
                     break
+                else:
+                    yield PhraseLabel(phrase.begin, right, noise=False)
 
 
     def _word_negatives(self, phrases: List[Tuple[int, int]], tag: str):

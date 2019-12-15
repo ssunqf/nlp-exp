@@ -90,6 +90,8 @@ class PhraseField(data.Field):
             return phrase.labels['distant'], 0.2
         if 'unlabel' in phrase.labels:
             return phrase.labels['unlabel'], 1.0
+        if 'noise' in phrase.labels:
+            return phrase.labels['noise'], 0.2
         return None, None
 
     def process(self,

@@ -399,7 +399,7 @@ class Config:
         self.entity_max_size = 150000
         self.entity_min_freq = 50
 
-        self.embedding_dim = 128
+        self.embedding_dim = 256
         self.encoder_mode = 'LSTM'  # ['RNN', 'LSTM', 'GRU']
         self.encoder_hidden_dim = 256
         self.encoder_num_layers = 2

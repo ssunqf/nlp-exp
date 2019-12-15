@@ -476,7 +476,7 @@ class PhraseClassifier(nn.Module):
         self.max_length = max_length
 
         self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden_dim * 4, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
@@ -580,8 +580,9 @@ class PhraseClassifier(nn.Module):
         return samples, features, targets, weights
 
     def _span_embed(self, hidden: torch.Tensor, begin: int, end: int):
-        return torch.cat((hidden[end-1, :self.hidden_dim] - hidden[begin-1, :self.hidden_dim],
+        return torch.cat((hidden[end - 1, :self.hidden_dim] - hidden[begin - 1, :self.hidden_dim],
                           hidden[begin, self.hidden_dim:] - hidden[end, self.hidden_dim:],
+                          hidden[begin - 1, :self.hidden_dim], hidden[end, self.hidden_dim:],
                           # hidden[begin:end].max(0)[0]
                           ), dim=-1)
 
