@@ -6,6 +6,7 @@ import random
 import itertools
 
 import torch
+from pytorch_transformers.modeling_distilbert import Transformer
 from torch import nn
 from torch.nn import functional as F
 from torchtext.vocab import Vocab
@@ -16,9 +17,7 @@ except ModuleNotFoundError:
     from torch.nn import LayerNorm
 
 # from .attention import MultiHeadedAttention
-from task.pretrained.baike.attention import MultiHeadedAttention
 from .base import Label, make_masks
-
 
 class SoftmaxLoss(nn.Module):
     def __init__(self):
@@ -126,91 +125,86 @@ class ContextClassifier(nn.Module):
         ), dim=-1)
 
 
-class Overparam(nn.Module):
-    def __init__(self, nhid):
-        super().__init__()
-        self.l1 = nn.Linear(nhid, 2 * nhid)
-        self.nhid = nhid
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self,
+                 n_heads: int, input_dim: int, output_dim: int, query_dim=None,
+                 attention_dropout=0.3, output_attentions=False):
+        super(MultiHeadSelfAttention, self).__init__()
 
-    def forward(self, x):
-        c, f = self.l1(x).split(self.nhid, dim=-1)
-        return torch.sigmoid(f) * torch.tanh(c)
+        self.n_heads = n_heads
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.dropout = nn.Dropout(p=attention_dropout)
+        self.output_attentions = output_attentions
 
+        assert self.output_dim % self.n_heads == 0
 
-class Attention(nn.Module):
-    def __init__(self, hidden_dim, num_heads=1, dropout=None):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.qs = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
-        self.ks = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
-        self.vs = nn.Parameter(torch.zeros(size=(1, 1, hidden_dim), dtype=torch.float))
+        self.q_lin = nn.Linear(in_features=query_dim if query_dim else input_dim, out_features=output_dim)
+        self.k_lin = nn.Linear(in_features=input_dim, out_features=output_dim)
+        self.v_lin = nn.Linear(in_features=input_dim, out_features=output_dim)
 
-        self.vq = Overparam(hidden_dim)
+    def forward(self, query, key, value, mask):
+        """
+        Parameters
+        ----------
+        query: torch.tensor(bs, seq_length, dim)
+        key: torch.tensor(bs, seq_length, dim)
+        value: torch.tensor(bs, seq_length, dim)
+        mask: torch.tensor(bs, seq_length) or torch.tensor(bs, seq_length, seq_length)
 
-        self.q_linear = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.qln = nn.LayerNorm(hidden_dim, eps=1e-12)
+        Outputs
+        -------
+        weights: torch.tensor(bs, n_heads, seq_length, seq_length)
+            Attention weights
+        context: torch.tensor(bs, seq_length, dim)
+            Contextualized layer. Optional: only if `output_attentions=True`
+        """
 
-        self.dropout = nn.Dropout(dropout) if dropout else None
+        bs, q_length, _ = query.size()
 
-        assert hidden_dim % num_heads == 0
+        # assert dim == self.dim, 'Dimensions do not match: %s input vs %s configured' % (dim, self.dim)
+        # assert key.size() == value.size()
 
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
+        dim_per_head = self.output_dim // self.n_heads
 
-        self.scale_ratio = math.sqrt(hidden_dim)
+        assert 2 <= mask.dim() <= 3
+        mask_reshp = (bs, 1, 1, mask.size(1)) if mask.dim() == 2 else (bs, 1, mask.size(1), mask.size(2))
 
-        self.output_linear = nn.Linear(hidden_dim, hidden_dim)
+        def shape(x):
+            """ separate heads """
+            return x.view(bs, -1, self.n_heads, dim_per_head).transpose(1, 2)
 
-    def forward(self, query, key, value, mask=None, batch_first=False):
-        qs, ks, vs = self.qs.sigmoid(), self.ks.sigmoid(), self.vq(self.vs.sigmoid())
+        def unshape(x):
+            """ group heads """
+            return x.transpose(1, 2).contiguous().view(bs, -1, self.n_heads * dim_per_head)
 
-        query, key, value = qs * self.qln(self.q_linear(query)), ks * key, vs * value
+        q = shape(self.q_lin(query))           # (bs, n_heads, q_length, dim_per_head)
+        k = shape(self.k_lin(key))             # (bs, n_heads, k_length, dim_per_head)
+        v = shape(self.v_lin(value))           # (bs, n_heads, k_length, dim_per_head)
 
-        if self.dropout:
-            query, key, value = self.dropout(query), key, self.dropout(value)
+        q = q / math.sqrt(dim_per_head)                     # (bs, n_heads, q_length, dim_per_head)
+        scores = torch.matmul(q, k.transpose(2,3))          # (bs, n_heads, q_length, k_length)
+        mask = mask.view(mask_reshp).expand_as(scores) # (bs, n_heads, q_length, k_length)
+        scores += mask           # (bs, n_heads, q_length, k_length)
 
-        if not batch_first:
-            query, key, value = query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1)
+        weights = nn.Softmax(dim=-1)(scores)   # (bs, n_heads, q_length, k_length)
+        weights = self.dropout(weights)        # (bs, n_heads, q_length, k_length)
 
-        attn_out, attn_weight = self._attention(query, key, value, mask)
+        context = torch.matmul(weights, v)     # (bs, n_heads, q_length, dim_per_head)
+        context = unshape(context)             # (bs, q_length, dim)
 
-        if not batch_first:
-            attn_out.transpose(0, 1)
-
-        return attn_out
-
-    def _attention(self, query, key, value, mask):
-
-        batch_size, query_len, hidden_dim = query.size()
-        key_len = key.size(1)
-        assert hidden_dim == self.hidden_dim
-
-        query = query.view(batch_size, query_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key = key.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
-        value = value.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / self.scale_ratio
-
-        if mask is not None:
-            mask = mask.view(batch_size, 1, query_len, key_len)
-            attention_scores = attention_scores + mask
-
-        attention_weights = F.softmax(attention_scores, dim=-1)
-
-        if self.dropout:
-            attention_weights = self.dropout(attention_weights)
-
-        attention_weights = attention_weights.view(batch_size, self.num_heads, query_len, key_len)
-
-        return torch.matmul(attention_weights, value).transpose(1, 2).view(batch_size, query_len, self.hidden_dim).transpose(0, 1), attention_weights
+        if self.output_attentions:
+            return (context, weights)
+        else:
+            return (context,)
 
 
 class LMAttention(nn.Module):
-    def __init__(self, hidden_dim, heads=1, dropout=None):
+    def __init__(self, hidden_dim, n_head=8, dropout=None):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.forward_attention = Attention(hidden_dim, num_heads=1, dropout=dropout)
-        self.backward_attention = Attention(hidden_dim, num_heads=1, dropout=dropout)
+        self.forward_attention = MultiHeadSelfAttention(n_head, hidden_dim, hidden_dim, query_dim=hidden_dim*2, attention_dropout=dropout)
+        self.backward_attention = MultiHeadSelfAttention(n_head, hidden_dim, hidden_dim, query_dim=hidden_dim*2, attention_dropout=dropout)
 
     def forward(self, hidden: torch.Tensor, lens: torch.Tensor):
         seq_len, batch_size, hidden_dim = hidden.size()
@@ -223,15 +217,16 @@ class LMAttention(nn.Module):
 
         for i, length in enumerate(lens.tolist()):
             f_mask[i, :, :length-2] = f_mask[i, :, :length-2].triu(diagonal=1)
-        f_attn = self.forward_attention(query, f[:-2], f[:-2], f_mask)
+        f_attn, = self.forward_attention(query.transpose(0, 1), f[:-2].transpose(0, 1), f[:-2].transpose(0, 1), f_mask)
+        f_attn = f_attn.transpose(0, 1)
 
         b_mask = torch.full((batch_size, seq_len-2, seq_len-2), -float("Inf"), device=hidden.device, dtype=hidden.dtype)
         for i, length in enumerate(lens.tolist()):
             b_mask[i, :, :length-2] = b_mask[i, :, :length-2].tril(diagonal=-1)
             b_mask[i, length-2:] = 0
 
-        b_attn = self.backward_attention(query, b[2:], b[2:], b_mask)
-
+        b_attn, = self.backward_attention(query.transpose(0, 1), b[2:].transpose(0, 1), b[2:].transpose(0, 1), b_mask)
+        b_attn = b_attn.transpose(0, 1)
         return torch.cat([f_attn, b_attn], dim=-1)
 
 
@@ -260,8 +255,6 @@ class LMClassifier(nn.Module):
         if shared_weight is not None:
             self.context2token.weight = shared_weight
 
-        self.inv_temperature = nn.Parameter(torch.tensor([1.0], dtype=torch.float))
-
     def forward(self,
                 hidden: torch.Tensor,
                 tokens: torch.Tensor,
@@ -271,11 +264,11 @@ class LMClassifier(nn.Module):
         # context = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
         context = self.lm_atten(hidden, lens)
 
-        logit = self.context2token(self.context_ffn(context)) * self.inv_temperature
+        logit = self.context2token(self.context_ffn(context))
+        target = tokens[1:-1]
+        assert logit.size()[:2] == target.size()
         return {
-            'loss': F.cross_entropy(logit.view(-1, self.voc_size),
-                                    tokens[1:-1].view(-1),
-                                    ignore_index=self.padding_idx),
+            'loss': F.cross_entropy(logit.view(-1, self.voc_size), target.view(-1), ignore_index=self.padding_idx),
         }
 
     def predict(self, hidden: torch.Tensor, lens: torch.Tensor) -> torch.Tensor:
@@ -283,7 +276,7 @@ class LMClassifier(nn.Module):
         assert dim == self.hidden_dim * 2
         # context = torch.cat((hidden[:-2, :, :self.hidden_dim], hidden[2:, :, self.hidden_dim:]), dim=-1)
         context = self.lm_atten(hidden, lens)
-        logit = self.context2token(self.context_ffn(context)) * self.inv_temperature
+        logit = self.context2token(self.context_ffn(context))
         return logit.max(dim=-1)[1]
 
 
@@ -467,6 +460,7 @@ class PUClassifier(nn.Module):
 
 
 # positive pointwise mutual information
+'''
 class PhraseClassifier(nn.Module):
     def __init__(self, name, hidden_dim, max_length=20, dropout=0.3):
         super(PhraseClassifier, self).__init__()
@@ -567,9 +561,6 @@ class PhraseClassifier(nn.Module):
             positive_weights = torch.tensor(positive_weights, dtype=torch.float, device=device)
             negative_weights = torch.tensor(negative_weights, dtype=torch.float, device=device)
 
-            scaled_ratio = 2 * len(positive_samples) / len(samples)
-            negative_weights = negative_weights * scaled_ratio
-
             weights = torch.cat((positive_weights, negative_weights), dim=0)
 
         else:
@@ -585,5 +576,132 @@ class PhraseClassifier(nn.Module):
                           hidden[begin - 1, :self.hidden_dim], hidden[end, self.hidden_dim:],
                           # hidden[begin:end].max(0)[0]
                           ), dim=-1)
+'''
 
+class PhraseClassifier(nn.Module):
+    def __init__(self, name, hidden_dim, max_length=20, dropout=0.3):
+        super(PhraseClassifier, self).__init__()
+
+        self.name = name
+        self.hidden_dim = hidden_dim
+        self.max_length = max_length
+
+        self.attention = MultiHeadSelfAttention(3 * 4, hidden_dim * 2, hidden_dim * 3, attention_dropout=dropout)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self,
+                hidden: torch.Tensor,
+                lens: torch.Tensor,
+                phrases: List[List[Tuple[int, int, int, float]]]) -> Dict[str, torch.Tensor]:
+        samples, features, targets, weigths = self._featured(hidden, lens, phrases)
+        if len(samples) == 0:
+            loss = torch.tensor([0.0], device=hidden.device)
+        else:
+            loss = F.binary_cross_entropy_with_logits(
+                self.ffn(features), targets.unsqueeze(-1), weight=weigths.unsqueeze(-1))
+
+        return {
+            'loss': loss
+        }
+
+    def predict(self,
+                hidden: torch.Tensor,
+                lens: torch.Tensor,
+                phrases: List[List[Tuple[int, int, int, float]]]) -> List[List[Tuple[int, int, float, float, float]]]:
+
+        samples, features, targets, weights = self._featured(hidden, lens, phrases)
+        if len(samples) == 0:
+            return [[] for _ in range(len(phrases))]
+
+        preds = self.ffn(features).sigmoid()
+
+        targets = targets.tolist()
+        weights = weights.tolist()
+        preds = preds.squeeze(-1).tolist()
+        results = [[] for _ in range(len(phrases))]
+        for id, (bid, begin, end) in enumerate(samples):
+            results[bid].append((begin, end, targets[id], preds[id], weights[id]))
+        return results
+
+    def find_phrase(self, hidden: torch.Tensor, lens: torch.Tensor,
+                    threshold=0.8) -> List[List[Tuple[int, int, float]]]:
+        device = hidden.device
+        atten_hidden, = self.attention(hidden.transpose(0, 1), hidden.transpose(0, 1), hidden.transpose(0, 1), self._mask(lens, device))
+        atten_hidden = atten_hidden.transpose(0, 1)
+        phrases = []
+        for bid in range(lens.size(0)):
+            samples = []
+            features = []
+            for begin in range(1, lens[bid].item() - 1):
+                for step in range(1, min(self.max_length + 1, lens[bid] - begin)):
+                    samples.append((begin, begin + step))
+                    features.append(self._span_embed(atten_hidden[:, bid],
+                                                     begin, begin + step))
+            if len(features) > 0:
+                features = torch.stack(features, dim=0)
+                probs = self.ffn(features).sigmoid().squeeze(-1).tolist()
+            else:
+                probs = []
+
+            phrases.append([(begin, end, prob) for (begin, end), prob in zip(samples, probs) if prob > threshold])
+
+        return phrases
+
+    def _mask(self, lens, device):
+        mask = torch.full((lens.size(0), lens.max().item()), -float('Inf'), device=device)
+        for i, l in enumerate(lens):
+            mask[i, :l] = 0
+
+        return mask
+
+    def _featured(self,
+                  hidden: torch.Tensor,
+                  lens: torch.Tensor,
+                  phrases: List[List[Tuple[int, int, int, float]]]) -> Tuple[List[Tuple[int, int, int]],
+                                                                    torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = hidden.device
+        atten_hidden, = self.attention(hidden.transpose(0, 1), hidden.transpose(0, 1), hidden.transpose(0, 1), self._mask(lens, device))
+        atten_hidden = atten_hidden.transpose(0, 1)
+
+        positive_samples, positive_weights = [], []
+        negative_samples, negative_weights = [], []
+        for bid, sentence in enumerate(phrases):
+            for begin, end, flag, weight in sentence:
+                if flag == 1:
+                    positive_samples.append((bid, begin, end))
+                    positive_weights.append(weight)
+                else:
+                    negative_samples.append((bid, begin, end))
+                    negative_weights.append(weight)
+
+        samples = positive_samples + negative_samples
+        if len(samples) > 0:
+            features = torch.stack(
+                [self._span_embed(atten_hidden[:, bid], begin, end) for bid, begin, end in samples],
+                dim=0)
+            targets = torch.tensor([1] * len(positive_samples) + [0] * len(negative_samples),
+                                   dtype=torch.float,
+                                   device=device)
+
+            positive_weights = torch.tensor(positive_weights, dtype=torch.float, device=device)
+            negative_weights = torch.tensor(negative_weights, dtype=torch.float, device=device)
+
+            weights = torch.cat((positive_weights, negative_weights), dim=0)
+
+        else:
+            features = torch.tensor([], device=device)
+            targets = torch.tensor([], device=device)
+            weights = torch.tensor([], device=device)
+
+        return samples, features, targets, weights
+
+    def _span_embed(self, hidden: torch.Tensor, begin: int, end: int):
+        return torch.cat((hidden[begin, :self.hidden_dim],
+                          hidden[begin:end, self.hidden_dim:self.hidden_dim*2].mean(0),
+                          hidden[end-1, self.hidden_dim*2:]), dim=-1)
 

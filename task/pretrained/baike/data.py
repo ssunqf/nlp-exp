@@ -98,9 +98,8 @@ class PhraseField(data.Field):
                 batch: List[List[PhraseLabel]],
                 device=None) -> List[List[Tuple[int, int, int, float]]]:
 
-        positive_weight = self.positive_count / (self.positive_count + self.negative_count + 1.0)
-        negative_weight = self.negative_count / (self.positive_count + self.negative_count + 1.0)
-
+        positive_weight = self.negative_count / (self.positive_count + self.negative_count + 1.0)
+        negative_weight = self.positive_count / (self.positive_count + self.negative_count + 1.0)
         return [self.process_sentence(phrases, positive_weight, negative_weight) for phrases in batch]
 
     def process_sentence(self, phrases: List[PhraseLabel], positive_weight, negative_weight):
@@ -117,7 +116,7 @@ class PhraseField(data.Field):
         if flag is True:
             return flag, weight * positive_weight
         elif flag is False:
-            return flag, weight * negative_weight
+            return flag, weight * negative_weight * 5
 
         return None, None
 
@@ -182,9 +181,6 @@ class BaikeDataset(Dataset):
                 print(line)
                 print(e)
                 pass
-
-            #if len(examples) > 500000:
-            #    break
 
         super(BaikeDataset, self).__init__(examples, fields, **kwargs)
 
@@ -341,7 +337,7 @@ class DatasetIterator:
         self.device = device
         self.repeat = repeat
 
-        self.offset = 0
+        self.offset = 50000
 
         valid, *_ = BaikeDataset.splits(self.fields, self.extractor, path=path, train=valid_file)
         self.valid, *_ = data.BucketIterator.splits(
