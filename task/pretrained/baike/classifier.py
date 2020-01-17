@@ -6,15 +6,9 @@ import random
 import itertools
 
 import torch
-from pytorch_transformers.modeling_distilbert import Transformer
 from torch import nn
 from torch.nn import functional as F
 from torchtext.vocab import Vocab
-
-try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
-except ModuleNotFoundError:
-    from torch.nn import LayerNorm
 
 # from .attention import MultiHeadedAttention
 from .base import Label, make_masks
@@ -143,6 +137,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.k_lin = nn.Linear(in_features=input_dim, out_features=output_dim)
         self.v_lin = nn.Linear(in_features=input_dim, out_features=output_dim)
 
+        self.out_lin = nn.Linear(output_dim, output_dim)
+
     def forward(self, query, key, value, mask):
         """
         Parameters
@@ -193,18 +189,51 @@ class MultiHeadSelfAttention(nn.Module):
         context = torch.matmul(weights, v)     # (bs, n_heads, q_length, dim_per_head)
         context = unshape(context)             # (bs, q_length, dim)
 
+        context = self.out_lin(context)
+
         if self.output_attentions:
             return (context, weights)
         else:
             return (context,)
 
 
+class FFN(nn.Module):
+    def __init__(self, input_dim, output_dim, activation='gelu', dropout=0.2):
+        super(FFN, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        self.lin1 = nn.Linear(in_features=input_dim, out_features=input_dim)
+        self.lin2 = nn.Linear(in_features=input_dim, out_features=output_dim)
+        assert activation in ['relu', 'gelu'], "activation ({}) must be in ['relu', 'gelu']".format(activation)
+        self.activation = nn.GELU() if activation == 'gelu' else nn.ReLU()
+
+    def forward(self, input):
+        x = self.lin1(input)
+        x = self.activation(x)
+        x = self.lin2(x)
+        x = self.dropout(x)
+        return x
+
+
 class LMAttention(nn.Module):
     def __init__(self, hidden_dim, n_head=8, dropout=None):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.forward_attention = MultiHeadSelfAttention(n_head, hidden_dim, hidden_dim, query_dim=hidden_dim*2, attention_dropout=dropout)
-        self.backward_attention = MultiHeadSelfAttention(n_head, hidden_dim, hidden_dim, query_dim=hidden_dim*2, attention_dropout=dropout)
+
+        self.forward_ffn = nn.Sequential(
+            FFN(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim, eps=1e-12))
+        self.forward_attention = MultiHeadSelfAttention(
+            n_head, hidden_dim, hidden_dim, query_dim=hidden_dim, attention_dropout=dropout)
+
+        self.backward_ffn = nn.Sequential(
+            FFN(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim, eps=1e-12))
+        self.backward_attention = MultiHeadSelfAttention(
+            n_head, hidden_dim, hidden_dim, query_dim=hidden_dim, attention_dropout=dropout)
+
+        self.attn_norm = nn.LayerNorm(hidden_dim * 2, eps=1e-12)
+        self.output_ffn = FFN(hidden_dim * 2, hidden_dim * 2)
+        self.output_norm = nn.LayerNorm(hidden_dim * 2, eps=1e-12)
 
     def forward(self, hidden: torch.Tensor, lens: torch.Tensor):
         seq_len, batch_size, hidden_dim = hidden.size()
@@ -214,20 +243,22 @@ class LMAttention(nn.Module):
         query = torch.cat([f[:-2], b[2:]], dim=-1)
 
         f_mask = torch.full((batch_size, seq_len-2, seq_len-2), -float('Inf'), device=hidden.device, dtype=hidden.dtype)
-
         for i, length in enumerate(lens.tolist()):
-            f_mask[i, :, :length-2] = f_mask[i, :, :length-2].triu(diagonal=1)
-        f_attn, = self.forward_attention(query.transpose(0, 1), f[:-2].transpose(0, 1), f[:-2].transpose(0, 1), f_mask)
+            f_mask[i, :length-2, :length-2] = f_mask[i, :length-2, :length-2].triu(diagonal=1)
+            f_mask[i, length - 2:] = 0
+        f_attn, = self.forward_attention(self.forward_ffn(query.transpose(0, 1)), f[:-2].transpose(0, 1), f[:-2].transpose(0, 1), f_mask)
         f_attn = f_attn.transpose(0, 1)
 
         b_mask = torch.full((batch_size, seq_len-2, seq_len-2), -float("Inf"), device=hidden.device, dtype=hidden.dtype)
         for i, length in enumerate(lens.tolist()):
-            b_mask[i, :, :length-2] = b_mask[i, :, :length-2].tril(diagonal=-1)
-            b_mask[i, length-2:] = 0
-
-        b_attn, = self.backward_attention(query.transpose(0, 1), b[2:].transpose(0, 1), b[2:].transpose(0, 1), b_mask)
+            b_mask[i, :length-2, :length-2] = b_mask[i, :length-2, :length-2].tril(diagonal=-1)
+            b_mask[i, length - 2:] = 0
+        b_attn, = self.backward_attention(self.backward_ffn(query.transpose(0, 1)), b[2:].transpose(0, 1), b[2:].transpose(0, 1), b_mask)
         b_attn = b_attn.transpose(0, 1)
-        return torch.cat([f_attn, b_attn], dim=-1)
+
+        attn_out = self.attn_norm(query + torch.cat([f_attn, b_attn], dim=-1))
+
+        return self.output_norm(self.output_ffn(attn_out))
 
 
 class LMClassifier(nn.Module):
@@ -578,6 +609,7 @@ class PhraseClassifier(nn.Module):
                           ), dim=-1)
 '''
 
+
 class PhraseClassifier(nn.Module):
     def __init__(self, name, hidden_dim, max_length=20, dropout=0.3):
         super(PhraseClassifier, self).__init__()
@@ -586,7 +618,17 @@ class PhraseClassifier(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_length = max_length
 
-        self.attention = MultiHeadSelfAttention(3 * 4, hidden_dim * 2, hidden_dim * 3, attention_dropout=dropout)
+        self.attention = MultiHeadSelfAttention(8, hidden_dim * 2, hidden_dim * 2, attention_dropout=dropout)
+        self.attn_norm1 = nn.LayerNorm(hidden_dim * 2, eps=1e-12)
+
+        self.left_ffn = FFN(hidden_dim * 2, hidden_dim)
+        self.left_norm = nn.LayerNorm(hidden_dim, eps=1e-12)
+
+        self.middle_ffn = FFN(hidden_dim * 2, hidden_dim)
+        self.middle_norm = nn.LayerNorm(hidden_dim, eps=1e-12)
+
+        self.right_ffn = FFN(hidden_dim * 2, hidden_dim)
+        self.right_norm = nn.LayerNorm(hidden_dim, eps=1e-12)
 
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim),
@@ -633,6 +675,14 @@ class PhraseClassifier(nn.Module):
         device = hidden.device
         atten_hidden, = self.attention(hidden.transpose(0, 1), hidden.transpose(0, 1), hidden.transpose(0, 1), self._mask(lens, device))
         atten_hidden = atten_hidden.transpose(0, 1)
+        atten_hidden = self.attn_norm1(hidden + atten_hidden)
+
+        left = self.left_norm(self.left_ffn(atten_hidden))
+        middle = self.middle_norm(self.middle_ffn(atten_hidden))
+        right = self.right_norm(self.right_ffn(atten_hidden))
+
+        atten_hidden = torch.cat([left, middle, right], dim=-1)
+
         phrases = []
         for bid in range(lens.size(0)):
             samples = []
@@ -667,6 +717,13 @@ class PhraseClassifier(nn.Module):
         device = hidden.device
         atten_hidden, = self.attention(hidden.transpose(0, 1), hidden.transpose(0, 1), hidden.transpose(0, 1), self._mask(lens, device))
         atten_hidden = atten_hidden.transpose(0, 1)
+        atten_hidden = self.attn_norm1(hidden + atten_hidden)
+
+        left = self.left_norm(self.left_ffn(atten_hidden))
+        middle = self.middle_norm(self.middle_ffn(atten_hidden))
+        right = self.right_norm(self.right_ffn(atten_hidden))
+
+        atten_hidden = torch.cat([left, middle, right], dim=-1)
 
         positive_samples, positive_weights = [], []
         negative_samples, negative_weights = [], []

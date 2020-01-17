@@ -53,6 +53,7 @@ class Model(nn.Module):
                     getattr(data, self.phrase_classifier.name))
             losses[self.phrase_classifier.name] = results['loss']
 
+        print(losses)
         return losses, lens.size(0)
 
     def named_embeddings(self):

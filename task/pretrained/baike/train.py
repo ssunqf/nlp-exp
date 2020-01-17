@@ -42,12 +42,6 @@ class Trainer:
             weight_decay=1e-6
         )
 
-        try:
-            from apex import amp
-            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level='O1')
-        except ModuleNotFoundError:
-            pass
-
         self.dataset_it = dataset_it
 
         self.text_voc = text_voc
